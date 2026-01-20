@@ -1,0 +1,981 @@
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
+
+// ============================================
+// CONSTANTES ET DONNÉES INITIALES
+// ============================================
+
+const CATEGORIES = [
+  { id: 'salary', name: 'Salaire', icon: '💰', color: '#10B981', type: 'income' },
+  { id: 'freelance', name: 'Freelance', icon: '💻', color: '#6366F1', type: 'income' },
+  { id: 'investment', name: 'Investissement', icon: '📈', color: '#8B5CF6', type: 'income' },
+  { id: 'rental', name: 'Loyer reçu', icon: '🏠', color: '#F59E0B', type: 'income' },
+  { id: 'other_income', name: 'Autre revenu', icon: '✨', color: '#EC4899', type: 'income' },
+  { id: 'rent', name: 'Loyer', icon: '🏡', color: '#EF4444', type: 'expense' },
+  { id: 'transport', name: 'Transport', icon: '🚗', color: '#F97316', type: 'expense' },
+  { id: 'food', name: 'Alimentation', icon: '🍔', color: '#84CC16', type: 'expense' },
+  { id: 'health', name: 'Santé', icon: '🏥', color: '#06B6D4', type: 'expense' },
+  { id: 'entertainment', name: 'Loisirs', icon: '🎮', color: '#A855F7', type: 'expense' },
+  { id: 'shopping', name: 'Shopping', icon: '🛍️', color: '#EC4899', type: 'expense' },
+  { id: 'utilities', name: 'Factures', icon: '💡', color: '#FBBF24', type: 'expense' },
+  { id: 'insurance', name: 'Assurance', icon: '🛡️', color: '#3B82F6', type: 'expense' },
+  { id: 'subscription', name: 'Abonnements', icon: '📺', color: '#8B5CF6', type: 'expense' },
+  { id: 'education', name: 'Éducation', icon: '📚', color: '#14B8A6', type: 'expense' },
+  { id: 'savings', name: 'Épargne', icon: '🏦', color: '#22C55E', type: 'expense' },
+  { id: 'other_expense', name: 'Autre dépense', icon: '📌', color: '#6B7280', type: 'expense' },
+];
+
+const POPULAR_BRANDS = [
+  { id: 'netflix', name: 'Netflix', logo: '🎬', color: '#E50914' },
+  { id: 'spotify', name: 'Spotify', logo: '🎵', color: '#1DB954' },
+  { id: 'amazon', name: 'Amazon', logo: '📦', color: '#FF9900' },
+  { id: 'apple', name: 'Apple', logo: '🍎', color: '#A2AAAD' },
+  { id: 'google', name: 'Google', logo: '🔍', color: '#4285F4' },
+  { id: 'uber', name: 'Uber', logo: '🚕', color: '#000000' },
+  { id: 'edf', name: 'EDF', logo: '⚡', color: '#FF6600' },
+  { id: 'orange', name: 'Orange', logo: '📱', color: '#FF7900' },
+  { id: 'sfr', name: 'SFR', logo: '📶', color: '#E4002B' },
+  { id: 'free', name: 'Free', logo: '📡', color: '#CD1E25' },
+  { id: 'sncf', name: 'SNCF', logo: '🚄', color: '#9B2743' },
+  { id: 'carrefour', name: 'Carrefour', logo: '🛒', color: '#004E9F' },
+  { id: 'lidl', name: 'Lidl', logo: '🏪', color: '#0050AA' },
+  { id: 'total', name: 'Total', logo: '⛽', color: '#FF0000' },
+  { id: 'ikea', name: 'IKEA', logo: '🪑', color: '#0051BA' },
+  { id: 'decathlon', name: 'Decathlon', logo: '🏃', color: '#0082C3' },
+  { id: 'gym', name: 'Salle de sport', logo: '🏋️', color: '#FF4500' },
+  { id: 'disney', name: 'Disney+', logo: '🏰', color: '#113CCF' },
+  { id: 'prime', name: 'Prime Video', logo: '🎥', color: '#00A8E1' },
+  { id: 'playstation', name: 'PlayStation', logo: '🎮', color: '#003791' },
+];
+
+const MONTHS_FR = [
+  'Janvier', 'Février', 'Mars', 'Avril', 'Mai', 'Juin',
+  'Juillet', 'Août', 'Septembre', 'Octobre', 'Novembre', 'Décembre'
+];
+
+// ============================================
+// FONCTIONS UTILITAIRES
+// ============================================
+
+const generateId = () => Math.random().toString(36).substr(2, 9);
+
+const formatCurrency = (amount) => {
+  return new Intl.NumberFormat('fr-FR', {
+    style: 'currency',
+    currency: 'EUR'
+  }).format(amount);
+};
+
+const formatDate = (dateString) => {
+  const date = new Date(dateString);
+  return date.toLocaleDateString('fr-FR', {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric'
+  });
+};
+
+const getDaysInMonth = (year, month) => {
+  return new Date(year, month + 1, 0).getDate();
+};
+
+const getFirstDayOfMonth = (year, month) => {
+  return new Date(year, month, 1).getDay();
+};
+
+// Fonction de hachage simple compatible HTTP
+const hashPassword = async (password) => {
+  let hash = 0;
+  const str = password + 'budget_salt_2024';
+  for (let i = 0; i < str.length; i++) {
+    const char = str.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash = hash & hash;
+  }
+  return Promise.resolve(Math.abs(hash).toString(16).padStart(16, '0'));
+};
+
+// ============================================
+// COMPOSANT MODAL SÉPARÉ (IMPORTANT!)
+// ============================================
+
+const TransactionModal = React.memo(({ 
+  showModal, 
+  setShowModal, 
+  modalType, 
+  editingTransaction,
+  onSubmit,
+  onReset,
+  darkMode,
+  allCategories 
+}) => {
+  const [localForm, setLocalForm] = useState({
+    name: '',
+    amount: '',
+    date: new Date().toISOString().split('T')[0],
+    category: '',
+    brand: '',
+    recurring: false,
+    notes: ''
+  });
+
+  useEffect(() => {
+    if (editingTransaction) {
+      setLocalForm({
+        name: editingTransaction.name,
+        amount: editingTransaction.amount.toString(),
+        date: editingTransaction.date,
+        category: editingTransaction.category,
+        brand: editingTransaction.brand || '',
+        recurring: editingTransaction.recurring || false,
+        notes: editingTransaction.notes || ''
+      });
+    } else {
+      setLocalForm({
+        name: '',
+        amount: '',
+        date: new Date().toISOString().split('T')[0],
+        category: '',
+        brand: '',
+        recurring: false,
+        notes: ''
+      });
+    }
+  }, [editingTransaction, showModal]);
+
+  if (!showModal) return null;
+
+  const filteredCategories = allCategories.filter(c => 
+    modalType === 'income' ? c.type === 'income' : c.type === 'expense'
+  );
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    onSubmit(localForm);
+  };
+
+  const handleClose = () => {
+    setShowModal(false);
+    onReset();
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+      <div className={`w-full max-w-lg ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-white border-gray-200'} border rounded-2xl shadow-2xl max-h-[90vh] overflow-y-auto`}>
+        <div className="p-6">
+          <div className="flex items-center justify-between mb-6">
+            <h3 className={`text-xl font-bold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+              {editingTransaction ? 'Modifier' : 'Ajouter'} {modalType === 'income' ? 'un revenu' : 'une dépense'}
+            </h3>
+            <button
+              onClick={handleClose}
+              className={`p-2 rounded-xl ${darkMode ? 'hover:bg-slate-700' : 'hover:bg-gray-100'} transition-all`}
+            >
+              ✕
+            </button>
+          </div>
+
+          <form onSubmit={handleSubmit} className="space-y-5">
+            <div>
+              <label className={`block text-sm font-medium mb-2 ${darkMode ? 'text-slate-300' : 'text-gray-700'}`}>
+                Description
+              </label>
+              <input
+                type="text"
+                value={localForm.name}
+                onChange={(e) => setLocalForm({...localForm, name: e.target.value})}
+                className={`w-full px-4 py-3 rounded-xl border ${darkMode ? 'bg-slate-700/50 border-slate-600 text-white placeholder-slate-500' : 'bg-gray-50 border-gray-200 text-gray-900'} focus:ring-2 focus:ring-emerald-500`}
+                placeholder="Ex: Salaire janvier"
+                required
+                autoComplete="off"
+              />
+            </div>
+
+            <div>
+              <label className={`block text-sm font-medium mb-2 ${darkMode ? 'text-slate-300' : 'text-gray-700'}`}>
+                Montant (€)
+              </label>
+              <input
+                type="number"
+                step="0.01"
+                min="0"
+                value={localForm.amount}
+                onChange={(e) => setLocalForm({...localForm, amount: e.target.value})}
+                className={`w-full px-4 py-3 rounded-xl border ${darkMode ? 'bg-slate-700/50 border-slate-600 text-white placeholder-slate-500' : 'bg-gray-50 border-gray-200 text-gray-900'} focus:ring-2 focus:ring-emerald-500`}
+                placeholder="0.00"
+                required
+                autoComplete="off"
+              />
+            </div>
+
+            <div>
+              <label className={`block text-sm font-medium mb-2 ${darkMode ? 'text-slate-300' : 'text-gray-700'}`}>
+                Date de prélèvement
+              </label>
+              <input
+                type="date"
+                value={localForm.date}
+                onChange={(e) => setLocalForm({...localForm, date: e.target.value})}
+                className={`w-full px-4 py-3 rounded-xl border ${darkMode ? 'bg-slate-700/50 border-slate-600 text-white' : 'bg-gray-50 border-gray-200 text-gray-900'} focus:ring-2 focus:ring-emerald-500`}
+                required
+              />
+            </div>
+
+            <div>
+              <label className={`block text-sm font-medium mb-2 ${darkMode ? 'text-slate-300' : 'text-gray-700'}`}>
+                Catégorie
+              </label>
+              <div className="grid grid-cols-3 sm:grid-cols-4 gap-2 max-h-40 overflow-y-auto p-1">
+                {filteredCategories.map(cat => (
+                  <button
+                    type="button"
+                    key={cat.id}
+                    onClick={() => setLocalForm({...localForm, category: cat.id})}
+                    className={`p-3 rounded-xl text-center transition-all ${
+                      localForm.category === cat.id
+                        ? 'ring-2 ring-emerald-500 bg-emerald-500/20'
+                        : darkMode ? 'bg-slate-700/50 hover:bg-slate-700' : 'bg-gray-50 hover:bg-gray-100'
+                    }`}
+                  >
+                    <span className="text-2xl block">{cat.icon}</span>
+                    <span className={`text-xs ${darkMode ? 'text-slate-400' : 'text-gray-500'}`}>{cat.name}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {modalType === 'expense' && (
+              <div>
+                <label className={`block text-sm font-medium mb-2 ${darkMode ? 'text-slate-300' : 'text-gray-700'}`}>
+                  Marque (optionnel)
+                </label>
+                <div className="flex flex-wrap gap-2 max-h-32 overflow-y-auto p-1">
+                  <button
+                    type="button"
+                    onClick={() => setLocalForm({...localForm, brand: ''})}
+                    className={`px-3 py-2 rounded-xl text-sm transition-all ${
+                      !localForm.brand
+                        ? 'ring-2 ring-emerald-500 bg-emerald-500/20'
+                        : darkMode ? 'bg-slate-700/50 hover:bg-slate-700' : 'bg-gray-50 hover:bg-gray-100'
+                    }`}
+                  >
+                    Aucune
+                  </button>
+                  {POPULAR_BRANDS.map(brand => (
+                    <button
+                      type="button"
+                      key={brand.id}
+                      onClick={() => setLocalForm({...localForm, brand: brand.id})}
+                      className={`px-3 py-2 rounded-xl text-sm flex items-center gap-1.5 transition-all ${
+                        localForm.brand === brand.id
+                          ? 'ring-2 ring-emerald-500 bg-emerald-500/20'
+                          : darkMode ? 'bg-slate-700/50 hover:bg-slate-700' : 'bg-gray-50 hover:bg-gray-100'
+                      }`}
+                    >
+                      <span>{brand.logo}</span>
+                      <span className={darkMode ? 'text-slate-300' : 'text-gray-700'}>{brand.name}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <label className="flex items-center gap-3 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={localForm.recurring}
+                onChange={(e) => setLocalForm({...localForm, recurring: e.target.checked})}
+                className="w-5 h-5 rounded border-slate-600 text-emerald-500 focus:ring-emerald-500"
+              />
+              <span className={darkMode ? 'text-slate-300' : 'text-gray-700'}>Transaction récurrente</span>
+            </label>
+
+            <div>
+              <label className={`block text-sm font-medium mb-2 ${darkMode ? 'text-slate-300' : 'text-gray-700'}`}>
+                Notes (optionnel)
+              </label>
+              <textarea
+                value={localForm.notes}
+                onChange={(e) => setLocalForm({...localForm, notes: e.target.value})}
+                rows={2}
+                className={`w-full px-4 py-3 rounded-xl border ${darkMode ? 'bg-slate-700/50 border-slate-600 text-white placeholder-slate-500' : 'bg-gray-50 border-gray-200 text-gray-900'} focus:ring-2 focus:ring-emerald-500 resize-none`}
+                placeholder="Ajouter une note..."
+                autoComplete="off"
+              />
+            </div>
+
+            <div className="flex gap-3 pt-2">
+              <button
+                type="button"
+                onClick={handleClose}
+                className={`flex-1 py-3 rounded-xl ${darkMode ? 'bg-slate-700 text-slate-300 hover:bg-slate-600' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'} font-medium transition-all`}
+              >
+                Annuler
+              </button>
+              <button
+                type="submit"
+                className={`flex-1 py-3 rounded-xl font-semibold text-white shadow-lg transition-all ${
+                  modalType === 'income'
+                    ? 'bg-gradient-to-r from-emerald-500 to-emerald-600 shadow-emerald-500/30 hover:shadow-emerald-500/50'
+                    : 'bg-gradient-to-r from-rose-500 to-pink-600 shadow-rose-500/30 hover:shadow-rose-500/50'
+                }`}
+              >
+                {editingTransaction ? 'Modifier' : 'Ajouter'}
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+  );
+});
+
+// ============================================
+// COMPOSANT PRINCIPAL
+// ============================================
+
+export default function BudgetApp() {
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [currentUser, setCurrentUser] = useState(null);
+  const [authMode, setAuthMode] = useState('login');
+  const [authError, setAuthError] = useState('');
+  const [authLoading, setAuthLoading] = useState(false);
+
+  const [transactions, setTransactions] = useState([]);
+  const [customCategories, setCustomCategories] = useState([]);
+  const [selectedDate, setSelectedDate] = useState(new Date());
+  const [currentView, setCurrentView] = useState('dashboard');
+  const [showModal, setShowModal] = useState(false);
+  const [modalType, setModalType] = useState('income');
+  const [editingTransaction, setEditingTransaction] = useState(null);
+  const [periodFilter, setPeriodFilter] = useState(1);
+  const [darkMode, setDarkMode] = useState(true);
+
+  const allCategories = useMemo(() => [...CATEGORIES, ...customCategories], [customCategories]);
+
+  useEffect(() => {
+    const savedUser = localStorage.getItem('budget_current_user');
+    if (savedUser) {
+      const user = JSON.parse(savedUser);
+      setCurrentUser(user);
+      setIsAuthenticated(true);
+      loadUserData(user.id);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (currentUser && isAuthenticated) {
+      localStorage.setItem(`budget_transactions_${currentUser.id}`, JSON.stringify(transactions));
+      localStorage.setItem(`budget_categories_${currentUser.id}`, JSON.stringify(customCategories));
+    }
+  }, [transactions, customCategories, currentUser, isAuthenticated]);
+
+  const loadUserData = (userId) => {
+    const savedTransactions = localStorage.getItem(`budget_transactions_${userId}`);
+    const savedCategories = localStorage.getItem(`budget_categories_${userId}`);
+    if (savedTransactions) setTransactions(JSON.parse(savedTransactions));
+    if (savedCategories) setCustomCategories(JSON.parse(savedCategories));
+  };
+
+  const handleRegister = async (e) => {
+    e.preventDefault();
+    setAuthLoading(true);
+    setAuthError('');
+
+    const formData = new FormData(e.target);
+    const email = formData.get('email');
+    const password = formData.get('password');
+    const confirmPassword = formData.get('confirmPassword');
+    const name = formData.get('name');
+
+    if (password !== confirmPassword) {
+      setAuthError('Les mots de passe ne correspondent pas');
+      setAuthLoading(false);
+      return;
+    }
+
+    if (password.length < 6) {
+      setAuthError('Le mot de passe doit contenir au moins 6 caractères');
+      setAuthLoading(false);
+      return;
+    }
+
+    const users = JSON.parse(localStorage.getItem('budget_users') || '[]');
+    if (users.find(u => u.email === email)) {
+      setAuthError('Cet email est déjà utilisé');
+      setAuthLoading(false);
+      return;
+    }
+
+    const hashedPassword = await hashPassword(password);
+    const newUser = {
+      id: generateId(),
+      email,
+      name,
+      password: hashedPassword,
+      createdAt: new Date().toISOString()
+    };
+
+    users.push(newUser);
+    localStorage.setItem('budget_users', JSON.stringify(users));
+    
+    const userSession = { id: newUser.id, email: newUser.email, name: newUser.name };
+    localStorage.setItem('budget_current_user', JSON.stringify(userSession));
+    
+    setCurrentUser(userSession);
+    setIsAuthenticated(true);
+    setAuthLoading(false);
+  };
+
+  const handleLogin = async (e) => {
+    e.preventDefault();
+    setAuthLoading(true);
+    setAuthError('');
+
+    const formData = new FormData(e.target);
+    const email = formData.get('email');
+    const password = formData.get('password');
+
+    const users = JSON.parse(localStorage.getItem('budget_users') || '[]');
+    const user = users.find(u => u.email === email);
+
+    if (!user) {
+      setAuthError('Email ou mot de passe incorrect');
+      setAuthLoading(false);
+      return;
+    }
+
+    const hashedPassword = await hashPassword(password);
+    if (user.password !== hashedPassword) {
+      setAuthError('Email ou mot de passe incorrect');
+      setAuthLoading(false);
+      return;
+    }
+
+    const userSession = { id: user.id, email: user.email, name: user.name };
+    localStorage.setItem('budget_current_user', JSON.stringify(userSession));
+    
+    setCurrentUser(userSession);
+    setIsAuthenticated(true);
+    loadUserData(user.id);
+    setAuthLoading(false);
+  };
+
+  const handleLogout = () => {
+    localStorage.removeItem('budget_current_user');
+    setCurrentUser(null);
+    setIsAuthenticated(false);
+    setTransactions([]);
+    setCustomCategories([]);
+  };
+
+  const handleSubmitTransaction = useCallback((formData) => {
+    const transaction = {
+      id: editingTransaction ? editingTransaction.id : generateId(),
+      ...formData,
+      amount: parseFloat(formData.amount),
+      type: modalType,
+      createdAt: editingTransaction ? editingTransaction.createdAt : new Date().toISOString()
+    };
+
+    if (editingTransaction) {
+      setTransactions(prev => prev.map(t => t.id === transaction.id ? transaction : t));
+    } else {
+      setTransactions(prev => [...prev, transaction]);
+    }
+
+    setShowModal(false);
+    setEditingTransaction(null);
+  }, [editingTransaction, modalType]);
+
+  const handleDeleteTransaction = useCallback((id) => {
+    if (confirm('Êtes-vous sûr de vouloir supprimer cette transaction ?')) {
+      setTransactions(prev => prev.filter(t => t.id !== id));
+    }
+  }, []);
+
+  const handleEditTransaction = useCallback((transaction) => {
+    setEditingTransaction(transaction);
+    setModalType(transaction.type);
+    setShowModal(true);
+  }, []);
+
+  const resetForm = useCallback(() => {
+    setEditingTransaction(null);
+  }, []);
+
+  const openModal = useCallback((type) => {
+    setModalType(type);
+    setEditingTransaction(null);
+    setShowModal(true);
+  }, []);
+
+  const getCategoryInfo = useCallback((categoryId) => {
+    return allCategories.find(c => c.id === categoryId) || { name: 'Autre', icon: '📌', color: '#6B7280' };
+  }, [allCategories]);
+
+  const getBrandInfo = useCallback((brandId) => {
+    return POPULAR_BRANDS.find(b => b.id === brandId);
+  }, []);
+
+  const getMonthlyData = useMemo(() => {
+    const year = selectedDate.getFullYear();
+    const month = selectedDate.getMonth();
+    
+    const monthTransactions = transactions.filter(t => {
+      const tDate = new Date(t.date);
+      return tDate.getFullYear() === year && tDate.getMonth() === month;
+    });
+
+    const income = monthTransactions.filter(t => t.type === 'income').reduce((sum, t) => sum + t.amount, 0);
+    const expenses = monthTransactions.filter(t => t.type === 'expense').reduce((sum, t) => sum + t.amount, 0);
+
+    return { income, expenses, balance: income - expenses, transactions: monthTransactions };
+  }, [transactions, selectedDate]);
+
+  const getFilteredTransactions = useMemo(() => {
+    const now = new Date();
+    const startDate = new Date(now.getFullYear(), now.getMonth() - periodFilter + 1, 1);
+    return transactions.filter(t => new Date(t.date) >= startDate);
+  }, [transactions, periodFilter]);
+
+  const getPeriodStats = useMemo(() => {
+    const income = getFilteredTransactions.filter(t => t.type === 'income').reduce((sum, t) => sum + t.amount, 0);
+    const expenses = getFilteredTransactions.filter(t => t.type === 'expense').reduce((sum, t) => sum + t.amount, 0);
+
+    const categoryBreakdown = {};
+    getFilteredTransactions.forEach(t => {
+      if (!categoryBreakdown[t.category]) {
+        categoryBreakdown[t.category] = { income: 0, expenses: 0 };
+      }
+      if (t.type === 'income') {
+        categoryBreakdown[t.category].income += t.amount;
+      } else {
+        categoryBreakdown[t.category].expenses += t.amount;
+      }
+    });
+
+    return { income, expenses, balance: income - expenses, categoryBreakdown };
+  }, [getFilteredTransactions]);
+
+  // ============================================
+  // RENDU AUTH
+  // ============================================
+
+  if (!isAuthenticated) {
+    return (
+      <div className={`min-h-screen flex items-center justify-center p-4 ${darkMode ? 'bg-gradient-to-br from-slate-900 via-purple-950 to-slate-900' : 'bg-gradient-to-br from-indigo-50 via-white to-purple-50'}`}>
+        <div className={`w-full max-w-md ${darkMode ? 'bg-slate-800/80 border-slate-700' : 'bg-white/90 border-gray-200'} backdrop-blur-xl rounded-3xl shadow-2xl border p-8`}>
+          <div className="text-center mb-8">
+            <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-gradient-to-br from-emerald-400 to-cyan-500 mb-4 shadow-lg shadow-emerald-500/30">
+              <span className="text-3xl">💎</span>
+            </div>
+            <h1 className={`text-2xl font-bold ${darkMode ? 'text-white' : 'text-gray-900'}`}>BudgetFlow</h1>
+            <p className={`${darkMode ? 'text-slate-400' : 'text-gray-500'} mt-1`}>Gérez votre argent intelligemment</p>
+          </div>
+
+          <div className="flex mb-6 p-1 rounded-xl bg-slate-700/50">
+            <button
+              onClick={() => { setAuthMode('login'); setAuthError(''); }}
+              className={`flex-1 py-2.5 rounded-lg text-sm font-medium transition-all ${authMode === 'login' ? 'bg-gradient-to-r from-emerald-500 to-cyan-500 text-white shadow-lg' : 'text-slate-400 hover:text-white'}`}
+            >
+              Connexion
+            </button>
+            <button
+              onClick={() => { setAuthMode('register'); setAuthError(''); }}
+              className={`flex-1 py-2.5 rounded-lg text-sm font-medium transition-all ${authMode === 'register' ? 'bg-gradient-to-r from-emerald-500 to-cyan-500 text-white shadow-lg' : 'text-slate-400 hover:text-white'}`}
+            >
+              Inscription
+            </button>
+          </div>
+
+          {authError && (
+            <div className="mb-4 p-3 rounded-xl bg-red-500/20 border border-red-500/30 text-red-400 text-sm">
+              {authError}
+            </div>
+          )}
+
+          {authMode === 'login' ? (
+            <form onSubmit={handleLogin} className="space-y-4">
+              <div>
+                <label className={`block text-sm font-medium mb-2 ${darkMode ? 'text-slate-300' : 'text-gray-700'}`}>Email</label>
+                <input type="email" name="email" required className={`w-full px-4 py-3 rounded-xl border ${darkMode ? 'bg-slate-700/50 border-slate-600 text-white placeholder-slate-500' : 'bg-gray-50 border-gray-200 text-gray-900'} focus:ring-2 focus:ring-emerald-500 focus:border-transparent transition-all`} placeholder="votre@email.com" />
+              </div>
+              <div>
+                <label className={`block text-sm font-medium mb-2 ${darkMode ? 'text-slate-300' : 'text-gray-700'}`}>Mot de passe</label>
+                <input type="password" name="password" required className={`w-full px-4 py-3 rounded-xl border ${darkMode ? 'bg-slate-700/50 border-slate-600 text-white placeholder-slate-500' : 'bg-gray-50 border-gray-200 text-gray-900'} focus:ring-2 focus:ring-emerald-500 focus:border-transparent transition-all`} placeholder="••••••••" />
+              </div>
+              <button type="submit" disabled={authLoading} className="w-full py-3 rounded-xl bg-gradient-to-r from-emerald-500 to-cyan-500 text-white font-semibold shadow-lg shadow-emerald-500/30 hover:shadow-emerald-500/50 transition-all disabled:opacity-50">
+                {authLoading ? 'Connexion...' : 'Se connecter'}
+              </button>
+            </form>
+          ) : (
+            <form onSubmit={handleRegister} className="space-y-4">
+              <div>
+                <label className={`block text-sm font-medium mb-2 ${darkMode ? 'text-slate-300' : 'text-gray-700'}`}>Nom</label>
+                <input type="text" name="name" required className={`w-full px-4 py-3 rounded-xl border ${darkMode ? 'bg-slate-700/50 border-slate-600 text-white placeholder-slate-500' : 'bg-gray-50 border-gray-200 text-gray-900'} focus:ring-2 focus:ring-emerald-500 focus:border-transparent transition-all`} placeholder="Votre nom" />
+              </div>
+              <div>
+                <label className={`block text-sm font-medium mb-2 ${darkMode ? 'text-slate-300' : 'text-gray-700'}`}>Email</label>
+                <input type="email" name="email" required className={`w-full px-4 py-3 rounded-xl border ${darkMode ? 'bg-slate-700/50 border-slate-600 text-white placeholder-slate-500' : 'bg-gray-50 border-gray-200 text-gray-900'} focus:ring-2 focus:ring-emerald-500 focus:border-transparent transition-all`} placeholder="votre@email.com" />
+              </div>
+              <div>
+                <label className={`block text-sm font-medium mb-2 ${darkMode ? 'text-slate-300' : 'text-gray-700'}`}>Mot de passe</label>
+                <input type="password" name="password" required className={`w-full px-4 py-3 rounded-xl border ${darkMode ? 'bg-slate-700/50 border-slate-600 text-white placeholder-slate-500' : 'bg-gray-50 border-gray-200 text-gray-900'} focus:ring-2 focus:ring-emerald-500 focus:border-transparent transition-all`} placeholder="••••••••" />
+              </div>
+              <div>
+                <label className={`block text-sm font-medium mb-2 ${darkMode ? 'text-slate-300' : 'text-gray-700'}`}>Confirmer</label>
+                <input type="password" name="confirmPassword" required className={`w-full px-4 py-3 rounded-xl border ${darkMode ? 'bg-slate-700/50 border-slate-600 text-white placeholder-slate-500' : 'bg-gray-50 border-gray-200 text-gray-900'} focus:ring-2 focus:ring-emerald-500 focus:border-transparent transition-all`} placeholder="••••••••" />
+              </div>
+              <button type="submit" disabled={authLoading} className="w-full py-3 rounded-xl bg-gradient-to-r from-emerald-500 to-cyan-500 text-white font-semibold shadow-lg shadow-emerald-500/30 hover:shadow-emerald-500/50 transition-all disabled:opacity-50">
+                {authLoading ? 'Création...' : 'Créer mon compte'}
+              </button>
+            </form>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // ============================================
+  // RENDU APP PRINCIPALE
+  // ============================================
+
+  return (
+    <div className={`min-h-screen ${darkMode ? 'bg-gradient-to-br from-slate-900 via-purple-950 to-slate-900' : 'bg-gradient-to-br from-slate-50 via-white to-indigo-50'}`}>
+      {/* Header */}
+      <header className={`sticky top-0 z-40 backdrop-blur-xl ${darkMode ? 'bg-slate-900/80 border-slate-800' : 'bg-white/80 border-gray-200'} border-b`}>
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 py-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-emerald-400 to-cyan-500 flex items-center justify-center shadow-lg shadow-emerald-500/30">
+                <span className="text-xl">💎</span>
+              </div>
+              <div>
+                <h1 className={`text-xl font-bold ${darkMode ? 'text-white' : 'text-gray-900'}`}>BudgetFlow</h1>
+                <p className={`text-xs ${darkMode ? 'text-slate-400' : 'text-gray-500'}`}>Bonjour, {currentUser?.name}</p>
+              </div>
+            </div>
+            
+            <div className="flex items-center gap-2">
+              <button onClick={() => setDarkMode(!darkMode)} className={`p-2.5 rounded-xl ${darkMode ? 'bg-slate-800 text-yellow-400 hover:bg-slate-700' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'} transition-all`}>
+                {darkMode ? '☀️' : '🌙'}
+              </button>
+              <button onClick={handleLogout} className={`px-4 py-2.5 rounded-xl ${darkMode ? 'bg-slate-800 text-slate-300 hover:bg-slate-700' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'} transition-all text-sm font-medium`}>
+                Déconnexion
+              </button>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      {/* Navigation */}
+      <nav className={`sticky top-[73px] z-30 backdrop-blur-xl ${darkMode ? 'bg-slate-900/60' : 'bg-white/60'}`}>
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 py-3">
+          <div className="flex gap-2 overflow-x-auto pb-1">
+            {[
+              { id: 'dashboard', label: 'Tableau de bord', icon: '📊' },
+              { id: 'calendar', label: 'Calendrier', icon: '📅' },
+              { id: 'transactions', label: 'Transactions', icon: '💳' },
+              { id: 'statistics', label: 'Statistiques', icon: '📈' },
+            ].map(view => (
+              <button
+                key={view.id}
+                onClick={() => setCurrentView(view.id)}
+                className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium whitespace-nowrap transition-all ${
+                  currentView === view.id
+                    ? 'bg-gradient-to-r from-emerald-500 to-cyan-500 text-white shadow-lg shadow-emerald-500/30'
+                    : darkMode ? 'text-slate-400 hover:text-white hover:bg-slate-800' : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100'
+                }`}
+              >
+                <span>{view.icon}</span>
+                <span>{view.label}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      </nav>
+
+      {/* Contenu principal */}
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 py-6">
+        {/* Boutons d'action */}
+        <div className="flex gap-3 mb-6">
+          <button onClick={() => openModal('income')} className="flex-1 sm:flex-none flex items-center justify-center gap-2 px-6 py-3 rounded-xl bg-gradient-to-r from-emerald-500 to-emerald-600 text-white font-semibold shadow-lg shadow-emerald-500/30 hover:shadow-emerald-500/50 transition-all">
+            <span className="text-lg">➕</span>
+            <span>Revenu</span>
+          </button>
+          <button onClick={() => openModal('expense')} className="flex-1 sm:flex-none flex items-center justify-center gap-2 px-6 py-3 rounded-xl bg-gradient-to-r from-rose-500 to-pink-600 text-white font-semibold shadow-lg shadow-rose-500/30 hover:shadow-rose-500/50 transition-all">
+            <span className="text-lg">➖</span>
+            <span>Dépense</span>
+          </button>
+        </div>
+
+        {/* DASHBOARD */}
+        {currentView === 'dashboard' && (
+          <div className="space-y-6">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <div className={`p-6 rounded-2xl ${darkMode ? 'bg-slate-800/50 border-slate-700' : 'bg-white border-gray-200'} border backdrop-blur-sm`}>
+                <div className="flex items-center justify-between mb-3">
+                  <span className={`text-sm font-medium ${darkMode ? 'text-slate-400' : 'text-gray-500'}`}>Revenus du mois</span>
+                  <span className="w-10 h-10 rounded-xl bg-emerald-500/20 flex items-center justify-center text-emerald-400">💰</span>
+                </div>
+                <p className="text-2xl font-bold text-emerald-400">{formatCurrency(getMonthlyData.income)}</p>
+              </div>
+              
+              <div className={`p-6 rounded-2xl ${darkMode ? 'bg-slate-800/50 border-slate-700' : 'bg-white border-gray-200'} border backdrop-blur-sm`}>
+                <div className="flex items-center justify-between mb-3">
+                  <span className={`text-sm font-medium ${darkMode ? 'text-slate-400' : 'text-gray-500'}`}>Dépenses du mois</span>
+                  <span className="w-10 h-10 rounded-xl bg-rose-500/20 flex items-center justify-center text-rose-400">💸</span>
+                </div>
+                <p className="text-2xl font-bold text-rose-400">{formatCurrency(getMonthlyData.expenses)}</p>
+              </div>
+              
+              <div className={`p-6 rounded-2xl ${darkMode ? 'bg-slate-800/50 border-slate-700' : 'bg-white border-gray-200'} border backdrop-blur-sm`}>
+                <div className="flex items-center justify-between mb-3">
+                  <span className={`text-sm font-medium ${darkMode ? 'text-slate-400' : 'text-gray-500'}`}>Solde</span>
+                  <span className={`w-10 h-10 rounded-xl ${getMonthlyData.balance >= 0 ? 'bg-cyan-500/20' : 'bg-orange-500/20'} flex items-center justify-center`}>
+                    {getMonthlyData.balance >= 0 ? '✨' : '⚠️'}
+                  </span>
+                </div>
+                <p className={`text-2xl font-bold ${getMonthlyData.balance >= 0 ? 'text-cyan-400' : 'text-orange-400'}`}>
+                  {formatCurrency(getMonthlyData.balance)}
+                </p>
+              </div>
+            </div>
+
+            <div className={`p-6 rounded-2xl ${darkMode ? 'bg-slate-800/50 border-slate-700' : 'bg-white border-gray-200'} border backdrop-blur-sm`}>
+              <h3 className={`text-lg font-semibold mb-4 ${darkMode ? 'text-white' : 'text-gray-900'}`}>Dernières transactions</h3>
+              {transactions.length === 0 ? (
+                <div className={`text-center py-12 ${darkMode ? 'text-slate-500' : 'text-gray-400'}`}>
+                  <span className="text-4xl block mb-3">📭</span>
+                  <p>Aucune transaction pour le moment</p>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {transactions.slice(-5).reverse().map(transaction => {
+                    const category = getCategoryInfo(transaction.category);
+                    const brand = getBrandInfo(transaction.brand);
+                    return (
+                      <div key={transaction.id} className={`flex items-center justify-between p-4 rounded-xl ${darkMode ? 'bg-slate-700/50 hover:bg-slate-700' : 'bg-gray-50 hover:bg-gray-100'} transition-all cursor-pointer group`} onClick={() => handleEditTransaction(transaction)}>
+                        <div className="flex items-center gap-3">
+                          <div className="w-12 h-12 rounded-xl flex items-center justify-center text-xl" style={{ backgroundColor: `${category.color}20` }}>
+                            {brand?.logo || category.icon}
+                          </div>
+                          <div>
+                            <p className={`font-medium ${darkMode ? 'text-white' : 'text-gray-900'}`}>{transaction.name}</p>
+                            <p className={`text-sm ${darkMode ? 'text-slate-400' : 'text-gray-500'}`}>{category.name} • {formatDate(transaction.date)}</p>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-3">
+                          <p className={`font-semibold ${transaction.type === 'income' ? 'text-emerald-400' : 'text-rose-400'}`}>
+                            {transaction.type === 'income' ? '+' : '-'}{formatCurrency(transaction.amount)}
+                          </p>
+                          <button onClick={(e) => { e.stopPropagation(); handleDeleteTransaction(transaction.id); }} className="opacity-0 group-hover:opacity-100 p-2 rounded-lg bg-red-500/20 text-red-400 hover:bg-red-500/30 transition-all">
+                            🗑️
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* CALENDAR */}
+        {currentView === 'calendar' && (
+          <div className={`p-6 rounded-2xl ${darkMode ? 'bg-slate-800/50 border-slate-700' : 'bg-white border-gray-200'} border backdrop-blur-sm`}>
+            <div className="flex items-center justify-between mb-6">
+              <button onClick={() => setSelectedDate(new Date(selectedDate.getFullYear(), selectedDate.getMonth() - 1, 1))} className={`p-2 rounded-xl ${darkMode ? 'hover:bg-slate-700' : 'hover:bg-gray-100'} transition-all`}>←</button>
+              <h3 className={`text-xl font-bold ${darkMode ? 'text-white' : 'text-gray-900'}`}>{MONTHS_FR[selectedDate.getMonth()]} {selectedDate.getFullYear()}</h3>
+              <button onClick={() => setSelectedDate(new Date(selectedDate.getFullYear(), selectedDate.getMonth() + 1, 1))} className={`p-2 rounded-xl ${darkMode ? 'hover:bg-slate-700' : 'hover:bg-gray-100'} transition-all`}>→</button>
+            </div>
+
+            <div className="grid grid-cols-7 gap-1 mb-2">
+              {['Lun', 'Mar', 'Mer', 'Jeu', 'Ven', 'Sam', 'Dim'].map(day => (
+                <div key={day} className={`text-center text-sm font-medium py-2 ${darkMode ? 'text-slate-500' : 'text-gray-400'}`}>{day}</div>
+              ))}
+            </div>
+
+            <div className="grid grid-cols-7 gap-1">
+              {(() => {
+                const year = selectedDate.getFullYear();
+                const month = selectedDate.getMonth();
+                const daysInMonth = getDaysInMonth(year, month);
+                const firstDay = getFirstDayOfMonth(year, month);
+                const adjustedFirstDay = firstDay === 0 ? 6 : firstDay - 1;
+
+                const cells = [];
+                for (let i = 0; i < adjustedFirstDay; i++) {
+                  cells.push(<div key={`empty-${i}`} className="aspect-square" />);
+                }
+                for (let day = 1; day <= daysInMonth; day++) {
+                  const dayTransactions = transactions.filter(t => {
+                    const tDate = new Date(t.date);
+                    return tDate.getFullYear() === year && tDate.getMonth() === month && tDate.getDate() === day;
+                  });
+                  const hasIncome = dayTransactions.some(t => t.type === 'income');
+                  const hasExpense = dayTransactions.some(t => t.type === 'expense');
+                  const isToday = new Date().toDateString() === new Date(year, month, day).toDateString();
+
+                  cells.push(
+                    <div key={day} className={`aspect-square p-1 rounded-xl relative ${darkMode ? 'hover:bg-slate-700' : 'hover:bg-gray-100'} transition-all cursor-pointer ${isToday ? 'ring-2 ring-cyan-500' : ''}`}>
+                      <span className={`text-sm ${darkMode ? 'text-slate-300' : 'text-gray-700'} ${isToday ? 'font-bold text-cyan-400' : ''}`}>{day}</span>
+                      <div className="absolute bottom-1 left-1/2 -translate-x-1/2 flex gap-0.5">
+                        {hasIncome && <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />}
+                        {hasExpense && <span className="w-1.5 h-1.5 rounded-full bg-rose-400" />}
+                      </div>
+                    </div>
+                  );
+                }
+                return cells;
+              })()}
+            </div>
+
+            <div className="mt-6 pt-6 border-t border-slate-700">
+              <h4 className={`font-semibold mb-4 ${darkMode ? 'text-white' : 'text-gray-900'}`}>Transactions de {MONTHS_FR[selectedDate.getMonth()]}</h4>
+              <div className="space-y-2 max-h-64 overflow-y-auto">
+                {getMonthlyData.transactions.length === 0 ? (
+                  <p className={`text-center py-4 ${darkMode ? 'text-slate-500' : 'text-gray-400'}`}>Aucune transaction ce mois</p>
+                ) : (
+                  getMonthlyData.transactions.sort((a, b) => new Date(b.date) - new Date(a.date)).map(t => {
+                    const category = getCategoryInfo(t.category);
+                    return (
+                      <div key={t.id} className={`flex items-center justify-between p-3 rounded-xl ${darkMode ? 'bg-slate-700/50' : 'bg-gray-50'}`}>
+                        <div className="flex items-center gap-2">
+                          <span>{category.icon}</span>
+                          <div>
+                            <p className={`text-sm font-medium ${darkMode ? 'text-white' : 'text-gray-900'}`}>{t.name}</p>
+                            <p className={`text-xs ${darkMode ? 'text-slate-400' : 'text-gray-500'}`}>{formatDate(t.date)}</p>
+                          </div>
+                        </div>
+                        <span className={`font-semibold ${t.type === 'income' ? 'text-emerald-400' : 'text-rose-400'}`}>
+                          {t.type === 'income' ? '+' : '-'}{formatCurrency(t.amount)}
+                        </span>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* TRANSACTIONS */}
+        {currentView === 'transactions' && (
+          <div className={`p-6 rounded-2xl ${darkMode ? 'bg-slate-800/50 border-slate-700' : 'bg-white border-gray-200'} border backdrop-blur-sm`}>
+            <h3 className={`text-lg font-semibold mb-4 ${darkMode ? 'text-white' : 'text-gray-900'}`}>Toutes les transactions ({transactions.length})</h3>
+            {transactions.length === 0 ? (
+              <div className={`text-center py-12 ${darkMode ? 'text-slate-500' : 'text-gray-400'}`}>
+                <span className="text-4xl block mb-3">🔍</span>
+                <p>Aucune transaction trouvée</p>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {transactions.sort((a, b) => new Date(b.date) - new Date(a.date)).map(transaction => {
+                  const category = getCategoryInfo(transaction.category);
+                  const brand = getBrandInfo(transaction.brand);
+                  return (
+                    <div key={transaction.id} className={`flex items-center justify-between p-4 rounded-xl ${darkMode ? 'bg-slate-700/50 hover:bg-slate-700' : 'bg-gray-50 hover:bg-gray-100'} transition-all cursor-pointer group`} onClick={() => handleEditTransaction(transaction)}>
+                      <div className="flex items-center gap-3">
+                        <div className="w-12 h-12 rounded-xl flex items-center justify-center text-xl" style={{ backgroundColor: `${category.color}20` }}>
+                          {brand?.logo || category.icon}
+                        </div>
+                        <div>
+                          <p className={`font-medium ${darkMode ? 'text-white' : 'text-gray-900'}`}>{transaction.name}</p>
+                          <p className={`text-sm ${darkMode ? 'text-slate-400' : 'text-gray-500'}`}>{category.name} • {formatDate(transaction.date)}{transaction.recurring && ' • 🔄'}</p>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <p className={`font-semibold ${transaction.type === 'income' ? 'text-emerald-400' : 'text-rose-400'}`}>
+                          {transaction.type === 'income' ? '+' : '-'}{formatCurrency(transaction.amount)}
+                        </p>
+                        <button onClick={(e) => { e.stopPropagation(); handleDeleteTransaction(transaction.id); }} className="opacity-0 group-hover:opacity-100 p-2 rounded-lg bg-red-500/20 text-red-400 hover:bg-red-500/30 transition-all">🗑️</button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* STATISTICS */}
+        {currentView === 'statistics' && (
+          <div className="space-y-6">
+            <div className={`p-4 rounded-2xl ${darkMode ? 'bg-slate-800/50 border-slate-700' : 'bg-white border-gray-200'} border backdrop-blur-sm`}>
+              <div className="flex gap-2 flex-wrap">
+                {[{ value: 1, label: '1 mois' }, { value: 3, label: '3 mois' }, { value: 6, label: '6 mois' }, { value: 12, label: '12 mois' }].map(period => (
+                  <button key={period.value} onClick={() => setPeriodFilter(period.value)} className={`px-4 py-2 rounded-xl text-sm font-medium transition-all ${periodFilter === period.value ? 'bg-gradient-to-r from-emerald-500 to-cyan-500 text-white shadow-lg' : darkMode ? 'bg-slate-700 text-slate-300 hover:bg-slate-600' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>
+                    {period.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <div className={`p-6 rounded-2xl ${darkMode ? 'bg-slate-800/50 border-slate-700' : 'bg-white border-gray-200'} border backdrop-blur-sm`}>
+                <p className={`text-sm ${darkMode ? 'text-slate-400' : 'text-gray-500'} mb-2`}>Total revenus ({periodFilter} mois)</p>
+                <p className="text-3xl font-bold text-emerald-400">{formatCurrency(getPeriodStats.income)}</p>
+              </div>
+              <div className={`p-6 rounded-2xl ${darkMode ? 'bg-slate-800/50 border-slate-700' : 'bg-white border-gray-200'} border backdrop-blur-sm`}>
+                <p className={`text-sm ${darkMode ? 'text-slate-400' : 'text-gray-500'} mb-2`}>Total dépenses ({periodFilter} mois)</p>
+                <p className="text-3xl font-bold text-rose-400">{formatCurrency(getPeriodStats.expenses)}</p>
+              </div>
+              <div className={`p-6 rounded-2xl ${darkMode ? 'bg-slate-800/50 border-slate-700' : 'bg-white border-gray-200'} border backdrop-blur-sm`}>
+                <p className={`text-sm ${darkMode ? 'text-slate-400' : 'text-gray-500'} mb-2`}>Économies ({periodFilter} mois)</p>
+                <p className={`text-3xl font-bold ${getPeriodStats.balance >= 0 ? 'text-cyan-400' : 'text-orange-400'}`}>{formatCurrency(getPeriodStats.balance)}</p>
+              </div>
+            </div>
+
+            <div className={`p-6 rounded-2xl ${darkMode ? 'bg-slate-800/50 border-slate-700' : 'bg-white border-gray-200'} border backdrop-blur-sm`}>
+              <h3 className={`text-lg font-semibold mb-6 ${darkMode ? 'text-white' : 'text-gray-900'}`}>Répartition des dépenses</h3>
+              {getPeriodStats.expenses === 0 ? (
+                <div className={`text-center py-12 ${darkMode ? 'text-slate-500' : 'text-gray-400'}`}>
+                  <span className="text-4xl block mb-3">📊</span>
+                  <p>Aucune dépense sur cette période</p>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  {Object.entries(getPeriodStats.categoryBreakdown).filter(([_, data]) => data.expenses > 0).sort((a, b) => b[1].expenses - a[1].expenses).map(([categoryId, data]) => {
+                    const category = getCategoryInfo(categoryId);
+                    const percentage = (data.expenses / getPeriodStats.expenses) * 100;
+                    return (
+                      <div key={categoryId}>
+                        <div className="flex items-center justify-between mb-2">
+                          <div className="flex items-center gap-2">
+                            <span className="text-xl">{category.icon}</span>
+                            <span className={`font-medium ${darkMode ? 'text-white' : 'text-gray-900'}`}>{category.name}</span>
+                          </div>
+                          <div className="text-right">
+                            <span className={`font-semibold ${darkMode ? 'text-white' : 'text-gray-900'}`}>{formatCurrency(data.expenses)}</span>
+                            <span className={`text-sm ml-2 ${darkMode ? 'text-slate-400' : 'text-gray-500'}`}>({percentage.toFixed(1)}%)</span>
+                          </div>
+                        </div>
+                        <div className={`h-3 rounded-full ${darkMode ? 'bg-slate-700' : 'bg-gray-200'} overflow-hidden`}>
+                          <div className="h-full rounded-full transition-all duration-500" style={{ width: `${percentage}%`, backgroundColor: category.color }} />
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+      </main>
+
+      {/* MODAL */}
+      <TransactionModal
+        showModal={showModal}
+        setShowModal={setShowModal}
+        modalType={modalType}
+        editingTransaction={editingTransaction}
+        onSubmit={handleSubmitTransaction}
+        onReset={resetForm}
+        darkMode={darkMode}
+        allCategories={allCategories}
+      />
+    </div>
+  );
+}

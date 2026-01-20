@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#10b981"/>
+      <stop offset="100%" style="stop-color:#06b6d4"/>
+    </linearGradient>
+    <linearGradient id="shine" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:rgba(255,255,255,0.3)"/>
+      <stop offset="100%" style="stop-color:rgba(255,255,255,0)"/>
+    </linearGradient>
+  </defs>
+  
+  <!-- Fond arrondi -->
+  <rect width="512" height="512" rx="96" fill="url(#bg)"/>
+  
+  <!-- Brillance -->
+  <rect width="512" height="256" rx="96" fill="url(#shine)"/>
+  
+  <!-- Symbole € stylisé -->
+  <text x="256" y="320" font-family="Arial, sans-serif" font-size="280" font-weight="bold" fill="white" text-anchor="middle">€</text>
+  
+  <!-- Flèche montante (croissance) -->
+  <path d="M340 180 L380 140 L380 170 L420 170 L420 190 L380 190 L380 220 Z" fill="white" opacity="0.9"/>
+  
+  <!-- Petit graphique en bas -->
+  <path d="M120 380 L180 340 L240 360 L300 300 L360 320 L390 280" stroke="white" stroke-width="12" stroke-linecap="round" stroke-linejoin="round" fill="none" opacity="0.6"/>
+</svg>
