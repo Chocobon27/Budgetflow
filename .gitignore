@@ -43,4 +43,5 @@ temp/
 
 # old app
 
-BudgetApp.*
+src/BudgetApp.jsx.backlast
+BudgetApp.jsx.bak
