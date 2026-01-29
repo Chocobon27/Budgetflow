@@ -1,16 +1,61 @@
-# React + Vite
+# 💰 BudgetFlow
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Application web et mobile (PWA) de gestion de budget personnel avec synchronisation multi-appareils en temps réel.
 
-Currently, two official plugins are available:
+![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)
+![License](https://img.shields.io/badge/license-MIT-green.svg)
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+## 📋 Fonctionnalités
 
-## React Compiler
+- ✅ Gestion des revenus et dépenses
+- ✅ Catégorisation des transactions
+- ✅ Budgets mensuels par catégorie
+- ✅ Objectifs d'épargne
+- ✅ Gestion des dettes avec échéancier
+- ✅ Budgets partagés (famille, colocation)
+- ✅ Statistiques et graphiques
+- ✅ Calendrier des transactions
+- ✅ Synchronisation temps réel (WebSocket)
+- ✅ Mode sombre
+- ✅ PWA (installable sur mobile)
+- ✅ Panel d'administration
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+## 🛠️ Stack Technique
 
-## Expanding the ESLint configuration
+### Frontend
+- React 18
+- Vite
+- Tailwind CSS
+- Socket.io Client
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+### Backend
+- Node.js / Express
+- PostgreSQL
+- Socket.io
+- JWT Authentication
+- bcrypt
+
+### Infrastructure
+- Nginx (reverse proxy)
+- Let's Encrypt (SSL)
+- systemd (service)
+- UFW (firewall)
+
+## 📦 Prérequis
+
+- **OS**: Debian 11/12 ou Ubuntu 22.04+
+- **Node.js**: 20.x ou supérieur
+- **PostgreSQL**: 14 ou supérieur
+- **Nginx**: 1.18 ou supérieur
+- **RAM**: 1 Go minimum
+- **Stockage**: 10 Go minimum
+- **Nom de domaine** avec accès DNS
+
+## 🚀 Installation Automatique
+
+### 1. Cloner le repository
+
+```bash
+git clone https://github.com/VOTRE_USERNAME/budgetflow.git
+cd budgetflow
+

@@ -1,129 +1,151 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
-const ADMIN_EMAIL = 'buteau.samuel@hotmail.fr'; // REMPLACE PAR TON EMAIL
+import { io } from 'socket.io-client';
+const ADMIN_EMAIL = 'buteau.samuel@hotmail.fr';
 
+// Configuration API
+const API_URL = 'https://fin.yugary-esport.fr/api';
 
-// ============================================
-// SYSTÈME DE SÉCURITÉ
-// ============================================
-
-const SecurityManager = (() => {
-  // Clé de chiffrement fixe (permet la synchronisation entre appareils)
-  const getDeviceKey = () => {
-    // Utiliser uniquement le timezone pour avoir une certaine variabilité
-    // mais garder la compatibilité entre desktop et mobile
-    return 'BF_FIXED_KEY_2024';
-  };
-
-  // Chiffrement XOR simple mais efficace
-  const encrypt = (data, key) => {
-    const str = JSON.stringify(data);
-    const keyStr = key + getDeviceKey();
-    let result = '';
-    for (let i = 0; i < str.length; i++) {
-      const charCode = str.charCodeAt(i) ^ keyStr.charCodeAt(i % keyStr.length);
-      result += String.fromCharCode(charCode);
-    }
-    return btoa(encodeURIComponent(result));
-  };
-
-  const decrypt = (encryptedData, key) => {
+// Fonctions API
+const api = {
+  getToken: () => localStorage.getItem('budgetflow_token'),
+  setToken: (token) => localStorage.setItem('budgetflow_token', token),
+  removeToken: () => localStorage.removeItem('budgetflow_token'),
+  
+  headers: () => ({
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${localStorage.getItem('budgetflow_token')}`
+  }),
+  
+  async request(endpoint, options = {}) {
     try {
-      const str = decodeURIComponent(atob(encryptedData));
-      const keyStr = key + getDeviceKey();
-      let result = '';
-      for (let i = 0; i < str.length; i++) {
-        const charCode = str.charCodeAt(i) ^ keyStr.charCodeAt(i % keyStr.length);
-        result += String.fromCharCode(charCode);
-      }
-      return JSON.parse(result);
-    } catch (e) {
-      return null;
-    }
-  };
-
-  // Clé maître de l'application
-  const APP_KEY = 'BudgetFlow_2024_Secure';
-  const STORAGE_PREFIX = '_bf_';
-
-  return {
-    // Sauvegarder des données chiffrées
-    saveSecure: (key, data) => {
-      try {
-        const encrypted = encrypt(data, APP_KEY);
-        localStorage.setItem(STORAGE_PREFIX + key, encrypted);
-        return true;
-      } catch (e) {
-        return false;
-      }
-    },
-
-    // Lire des données chiffrées
-    loadSecure: (key) => {
-      try {
-        const encrypted = localStorage.getItem(STORAGE_PREFIX + key);
-        if (!encrypted) return null;
-        return decrypt(encrypted, APP_KEY);
-      } catch (e) {
+      const response = await fetch(`${API_URL}${endpoint}`, {
+        ...options,
+        headers: this.headers()
+      });
+      
+      if (response.status === 401 || response.status === 403) {
+        this.removeToken();
+        window.location.reload();
         return null;
       }
-    },
-
-    // Supprimer des données
-    removeSecure: (key) => {
-      localStorage.removeItem(STORAGE_PREFIX + key);
-    },
-
-    // Hash sécurisé pour mots de passe
-    hashPassword: (password, salt = '') => {
-      const str = password + salt + 'BF_SALT_2024';
-      let h1 = 0xdeadbeef, h2 = 0x41c6ce57;
-      for (let i = 0; i < str.length; i++) {
-        const ch = str.charCodeAt(i);
-        h1 = Math.imul(h1 ^ ch, 2654435761);
-        h2 = Math.imul(h2 ^ ch, 1597334677);
-      }
-      h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507);
-      h1 ^= Math.imul(h2 ^ (h2 >>> 13), 3266489909);
-      h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507);
-      h2 ^= Math.imul(h1 ^ (h1 >>> 13), 3266489909);
-      return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36);
-    },
-
-    // Hash pour réponse secrète (insensible à la casse)
-    hashSecretAnswer: (answer) => {
-      const normalized = answer.toLowerCase().trim().replace(/\s+/g, '');
-      return SecurityManager.hashPassword(normalized, 'SECRET');
+      
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Erreur serveur');
+      return data;
+    } catch (error) {
+      console.error('API Error:', error);
+      throw error;
     }
-  };
-})();
-
-// Protéger contre l'accès console (désactiver en dev si besoin)
-(() => {
-  const protectedKeys = ['_bf_users', '_bf_session', '_bf_transactions'];
-  const originalGetItem = localStorage.getItem.bind(localStorage);
-  const originalSetItem = localStorage.setItem.bind(localStorage);
+  },
   
-  // Détecter si la console est ouverte
-  let consoleOpen = false;
-  const checkConsole = () => {
-    const threshold = 160;
-    consoleOpen = window.outerWidth - window.innerWidth > threshold || 
-                  window.outerHeight - window.innerHeight > threshold;
-  };
-  
-  window.addEventListener('resize', checkConsole);
-  checkConsole();
-
-  // Avertissement si accès direct tenté
-  if (typeof window !== 'undefined') {
-    Object.defineProperty(window, 'budgetData', {
-      get: () => {
-        console.warn('⚠️ Accès non autorisé aux données BudgetFlow');
-        return null;
-      }
+  // Auth
+  async login(email, password) {
+    const response = await fetch(`${API_URL}/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password })
     });
-  }
-})();
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error);
+    this.setToken(data.token);
+    return data;
+  },
+  
+  async register(email, password, name, secretQuestion, secretAnswer) {
+    const response = await fetch(`${API_URL}/auth/register`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password, name, secretQuestion, secretAnswer })
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error);
+    this.setToken(data.token);
+    return data;
+  },
+  
+  async verify() { return this.request('/auth/verify'); },
+  async logout() { await this.request('/auth/logout', { method: 'POST' }); this.removeToken(); },
+  
+  async forgotPassword(email) {
+    const response = await fetch(`${API_URL}/auth/forgot-password`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email })
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error);
+    return data;
+  },
+  
+  async resetPassword(email, secretAnswer, newPassword) {
+    const response = await fetch(`${API_URL}/auth/reset-password`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, secretAnswer, newPassword })
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error);
+    return data;
+  },
+  
+  // Sync - récupère toutes les données
+  async sync() { return this.request('/sync'); },
+  
+  // Transactions
+  async addTransaction(t) { return this.request('/transactions', { method: 'POST', body: JSON.stringify(t) }); },
+  async updateTransaction(id, t) { return this.request(`/transactions/${id}`, { method: 'PUT', body: JSON.stringify(t) }); },
+  async deleteTransaction(id) { return this.request(`/transactions/${id}`, { method: 'DELETE' }); },
+  
+  // Savings
+  async updateSavings(amount) { return this.request('/savings', { method: 'PUT', body: JSON.stringify({ amount }) }); },
+  
+  // Savings Goals
+  async addSavingsGoal(g) { return this.request('/savings-goals', { method: 'POST', body: JSON.stringify(g) }); },
+  async updateSavingsGoal(id, g) { return this.request(`/savings-goals/${id}`, { method: 'PUT', body: JSON.stringify(g) }); },
+  async deleteSavingsGoal(id) { return this.request(`/savings-goals/${id}`, { method: 'DELETE' }); },
+  
+  // Category Budgets
+  async updateCategoryBudgets(b) { return this.request('/category-budgets', { method: 'PUT', body: JSON.stringify(b) }); },
+  
+  // Custom Categories
+  async addCustomCategory(c) { return this.request('/custom-categories', { method: 'POST', body: JSON.stringify(c) }); },
+  async deleteCustomCategory(id) { return this.request(`/custom-categories/${id}`, { method: 'DELETE' }); },
+  
+  // Custom Brands
+  async addCustomBrand(b) { return this.request('/custom-brands', { method: 'POST', body: JSON.stringify(b) }); },
+  async deleteCustomBrand(id) { return this.request(`/custom-brands/${id}`, { method: 'DELETE' }); },
+  
+  // Debts
+  async addDebt(d) { return this.request('/debts', { method: 'POST', body: JSON.stringify(d) }); },
+  async updateDebt(id, d) { return this.request(`/debts/${id}`, { method: 'PUT', body: JSON.stringify(d) }); },
+  async deleteDebt(id) { return this.request(`/debts/${id}`, { method: 'DELETE' }); },
+  
+  // Templates
+  async addTemplate(t) { return this.request('/templates', { method: 'POST', body: JSON.stringify(t) }); },
+  async updateTemplate(id, t) { return this.request(`/templates/${id}`, { method: 'PUT', body: JSON.stringify(t) }); },
+  async deleteTemplate(id) { return this.request(`/templates/${id}`, { method: 'DELETE' }); },
+  
+  // Achievements
+  async updateAchievements(a) { return this.request('/achievements', { method: 'PUT', body: JSON.stringify(a) }); },
+  
+  // Planned Budget
+  async updatePlannedBudget(b) { return this.request('/planned-budget', { method: 'PUT', body: JSON.stringify(b) }); },
+  
+  // Shared Budgets
+  async getSharedBudgets() { return this.request('/shared-budgets'); },
+  async createSharedBudget(name) { return this.request('/shared-budgets', { method: 'POST', body: JSON.stringify({ name }) }); },
+  async joinSharedBudget(inviteCode) { return this.request('/shared-budgets/join', { method: 'POST', body: JSON.stringify({ inviteCode }) }); },
+  async leaveSharedBudget(id) { return this.request(`/shared-budgets/${id}/leave`, { method: 'POST' }); },
+  async addSharedTransaction(budgetId, t) { return this.request(`/shared-budgets/${budgetId}/transactions`, { method: 'POST', body: JSON.stringify(t) }); },
+  async deleteSharedTransaction(budgetId, tId) { return this.request(`/shared-budgets/${budgetId}/transactions/${tId}`, { method: 'DELETE' }); },
+  async updateSharedSavings(budgetId, amount) { return this.request(`/shared-budgets/${budgetId}/savings`, { method: 'PUT', body: JSON.stringify({ amount }) }); },
+
+  // Admin
+  async checkAdmin() { return this.request('/admin/check'); },
+  async getAdminUsers() { return this.request('/admin/users'); },
+  async setUserAdmin(userId, isAdmin) { return this.request(`/admin/users/${userId}/admin`, { method: 'PUT', body: JSON.stringify({ isAdmin }) }); },
+  async deleteUser(userId) { return this.request(`/admin/users/${userId}`, { method: 'DELETE' }); }
+};
 
 // ============================================
 // CONSTANTES
@@ -275,6 +297,17 @@ const formatCurrency = (amount) => {
 const formatDate = (dateString) => {
   const date = new Date(dateString);
   return date.toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', year: 'numeric' });
+};
+
+// Format a date value to `YYYY-MM-DD` for <input type="date"> values.
+const formatDateForInput = (d) => {
+  if (!d) return '';
+  const date = new Date(d);
+  if (isNaN(date)) return '';
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
 };
 
 const getDaysInMonth = (year, month) => new Date(year, month + 1, 0).getDate();
@@ -531,6 +564,14 @@ export default function BudgetApp() {
   const [authLoading, setAuthLoading] = useState(false);
   const [forgotEmail, setForgotEmail] = useState('');
   const [forgotUser, setForgotUser] = useState(null);
+  // États WebSocket
+  const [socket, setSocket] = useState(null);
+  const [isConnected, setIsConnected] = useState(false);
+
+  // États Admin (depuis DB)
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [adminUsers, setAdminUsers] = useState([]);
+  const [loadingAdmin, setLoadingAdmin] = useState(false);
 
   // États app
   const [transactions, setTransactions] = useState([]);
@@ -583,10 +624,7 @@ export default function BudgetApp() {
   const [savings, setSavings] = useState(0);
   const [showSavingsModal, setShowSavingsModal] = useState(false);
   const [savingsAction, setSavingsAction] = useState('add');
-  const [sharedBudgets, setSharedBudgets] = useState(() => {
-  const saved = SecurityManager.loadSecure('sharedBudgets');
-    return saved || [];
-  });
+  const [sharedBudgets, setSharedBudgets] = useState([]);
   const [currentSharedBudget, setCurrentSharedBudget] = useState(null);
   const [showSharedBudgetModal, setShowSharedBudgetModal] = useState(false);
   const [showCreateSharedBudget, setShowCreateSharedBudget] = useState(false);
@@ -597,10 +635,7 @@ export default function BudgetApp() {
   const [filterMinAmount, setFilterMinAmount] = useState('');
   const [filterMaxAmount, setFilterMaxAmount] = useState('');
   const [showFilters, setShowFilters] = useState(false);
-  const [quickTemplates, setQuickTemplates] = useState(() => {
-    const saved = localStorage.getItem('budgetflow_templates');
-    return saved ? JSON.parse(saved) : [];
-  });
+  const [quickTemplates, setQuickTemplates] = useState([]);
   const [showTemplatesModal, setShowTemplatesModal] = useState(false);
   const [showNewTemplateForm, setShowNewTemplateForm] = useState(false);
   const [editingTemplate, setEditingTemplate] = useState(null);
@@ -608,53 +643,24 @@ export default function BudgetApp() {
     return localStorage.getItem('budgetflow_autoTheme') === 'true';
   });
   const [analysisTab, setAnalysisTab] = useState('overview');
-  const [categoryBudgets, setCategoryBudgets] = useState(() => {
-    try {
-      const saved = localStorage.getItem('budgetflow_categoryBudgets');
-      if (!saved) return {};
-      const parsed = JSON.parse(saved);
-      // Nettoyer les valeurs pour s'assurer que ce sont des nombres
-      const cleaned = {};
-      Object.entries(parsed).forEach(([key, value]) => {
-        const num = parseFloat(value);
-        if (!isNaN(num) && num > 0) {
-          cleaned[key] = num;
-        }
-      });
-      return cleaned;
-    } catch {
-      return {};
-    }
-  });
-  const [savingsGoals, setSavingsGoals] = useState(() => {
-    const saved = localStorage.getItem('budgetflow_savingsGoals');
-    return saved ? JSON.parse(saved) : [];
-  });
+  const [categoryBudgets, setCategoryBudgets] = useState({});
+  const [savingsGoals, setSavingsGoals] = useState([]);
   const [showBudgetModal, setShowBudgetModal] = useState(false);
   const [showGoalModal, setShowGoalModal] = useState(false);
   const [editingGoal, setEditingGoal] = useState(null);
   const [showSimulator, setShowSimulator] = useState(false);
-  const [debts, setDebts] = useState(() => {
-    const saved = localStorage.getItem('budgetflow_debts');
-    return saved ? JSON.parse(saved) : [];
-  });
+  const [debts, setDebts] = useState([]);
   const [showDebtModal, setShowDebtModal] = useState(false);
   const [editingDebt, setEditingDebt] = useState(null);
-  const [plannedBudget, setPlannedBudget] = useState(() => {
-    const saved = localStorage.getItem('budgetflow_plannedBudget');
-    return saved ? JSON.parse(saved) : {};
-  });
+  const [plannedBudget, setPlannedBudget] = useState({});
+
   const [showPlannedBudgetModal, setShowPlannedBudgetModal] = useState(false);
-  const [achievements, setAchievements] = useState(() => {
-    const saved = localStorage.getItem('budgetflow_achievements');
-    return saved ? JSON.parse(saved) : { unlocked: [], streak: 0, lastActivity: null, points: 0 };
-  });
+  const [achievements, setAchievements] = useState({ unlocked: [], streak: 0, lastActivity: null, points: 0 });
+
   const [showAchievementsModal, setShowAchievementsModal] = useState(false);
   const [newAchievement, setNewAchievement] = useState(null);
-  const [adminList, setAdminList] = useState(() => {
-    const saved = localStorage.getItem('budgetflow_adminList');
-    return saved ? JSON.parse(saved) : [{ email: ADMIN_EMAIL, permissions: ['all'], addedAt: new Date().toISOString() }];
-  });
+  //const isSuperAdmin = currentUser?.email === ADMIN_EMAIL;
+  //const currentAdminPermissions = ['all']; // Pour l'instant, tous les droits pour ADMIN_EMAIL
   const [showAdminModal, setShowAdminModal] = useState(false);
   const [editingAdmin, setEditingAdmin] = useState(null);
   const [confirmDialog, setConfirmDialog] = useState({ show: false, title: '', message: '', onConfirm: null });
@@ -680,67 +686,34 @@ export default function BudgetApp() {
   });
   const [customBrands, setCustomBrands] = useState([]);
 
-  // Sauvegarder l'épargne
-  useEffect(() => {
-    if (currentUser && savings !== undefined) {
-      SecurityManager.saveSecure(`savings_${currentUser.id}`, savings);
-    }
-  }, [savings, currentUser]);
+  // Mémos calculés
+  const allCategories = useMemo(() => [...CATEGORIES, ...customCategories], [customCategories]);
+  const allBrands = useMemo(() => [...POPULAR_BRANDS, ...customBrands], [customBrands]);
 
-  // Sauvegarder les paramètres de notifications
-  useEffect(() => {
-    localStorage.setItem('budgetflow_notifications', JSON.stringify(notificationSettings));
-  }, [notificationSettings]);
+  // Sauvegarder les données via API quand elles changent
+useEffect(() => {
+  if (currentUser && isAuthenticated) {
+    api.updateSavings(savings).catch(console.error);
+  }
+}, [savings]);
 
-  // Sauvegarder les paramètres de backup
-  useEffect(() => {
-    localStorage.setItem('budgetflow_backupSettings', JSON.stringify(backupSettings));
-  }, [backupSettings]);
+useEffect(() => {
+  if (currentUser && isAuthenticated && Object.keys(categoryBudgets).length > 0) {
+    api.updateCategoryBudgets(categoryBudgets).catch(console.error);
+  }
+}, [categoryBudgets]);
 
-    // Sauvegarder les budgets partagés
-  useEffect(() => {
-    SecurityManager.saveSecure('sharedBudgets', sharedBudgets);
-  }, [sharedBudgets]);
+useEffect(() => {
+  if (currentUser && isAuthenticated) {
+    api.updateAchievements(achievements).catch(console.error);
+  }
+}, [achievements]);
 
-  // Sauvegarder les templates
-  useEffect(() => {
-    localStorage.setItem('budgetflow_templates', JSON.stringify(quickTemplates));
-  }, [quickTemplates]);
-
-    // Sauvegarder les budgets par catégorie
-  useEffect(() => {
-    localStorage.setItem('budgetflow_categoryBudgets', JSON.stringify(categoryBudgets));
-  }, [categoryBudgets]);
-
-  // Sauvegarder les objectifs d'épargne
-  useEffect(() => {
-    localStorage.setItem('budgetflow_savingsGoals', JSON.stringify(savingsGoals));
-  }, [savingsGoals]);
-
-  // Sauvegarder les dettes
-  useEffect(() => {
-    localStorage.setItem('budgetflow_debts', JSON.stringify(debts));
-  }, [debts]);
-
-  // Sauvegarder le budget prévisionnel
-  useEffect(() => {
-    localStorage.setItem('budgetflow_plannedBudget', JSON.stringify(plannedBudget));
-  }, [plannedBudget]);
-
-  // Sauvegarder les achievements
-  useEffect(() => {
-    localStorage.setItem('budgetflow_achievements', JSON.stringify(achievements));
-  }, [achievements]);
-
-  // Sauvegarder la liste des admins
-  useEffect(() => {
-    localStorage.setItem('budgetflow_adminList', JSON.stringify(adminList));
-  }, [adminList]);
-  
-  // Sauvegarder le mode auto theme
-  useEffect(() => {
-    localStorage.setItem('budgetflow_autoTheme', autoTheme.toString());
-  }, [autoTheme]);
+useEffect(() => {
+  if (currentUser && isAuthenticated && Object.keys(plannedBudget).length > 0) {
+    api.updatePlannedBudget(plannedBudget).catch(console.error);
+  }
+}, [plannedBudget]);
 
   // Thème automatique selon les préférences système
   useEffect(() => {
@@ -765,67 +738,6 @@ export default function BudgetApp() {
     }
   }, [currentUser, sharedBudgets]);
 
-// Sauvegarde automatique périodique
-  useEffect(() => {
-    if (!currentUser || !isAuthenticated || !backupSettings.autoBackupEnabled) return;
-    
-    const performAutoBackup = () => {
-      const now = new Date();
-      const currentHour = now.getHours();
-      
-      // Vérifie si c'est l'heure programmée
-      if (currentHour !== backupSettings.autoBackupHour) return;
-      
-      const lastBackup = localStorage.getItem('budgetflow_lastAutoBackup');
-      const lastBackupDate = lastBackup ? new Date(parseInt(lastBackup)) : null;
-      
-      // Vérifie si on a déjà fait une sauvegarde aujourd'hui
-      if (lastBackupDate && lastBackupDate.toDateString() === now.toDateString()) return;
-      
-      const backup = {
-        version: '1.0',
-        date: now.toISOString(),
-        type: 'auto',
-        users: SecurityManager.loadSecure('users') || [],
-        data: {}
-      };
-      
-      const users = SecurityManager.loadSecure('users') || [];
-      users.forEach(user => {
-        backup.data[user.id] = {
-          transactions: SecurityManager.loadSecure(`transactions_${user.id}`) || [],
-          categories: SecurityManager.loadSecure(`categories_${user.id}`) || [],
-          brands: SecurityManager.loadSecure(`brands_${user.id}`) || [],
-          savings: SecurityManager.loadSecure(`savings_${user.id}`) || 0
-        };
-      });
-      
-      const autoBackups = JSON.parse(localStorage.getItem('budgetflow_autoBackups') || '[]');
-      autoBackups.unshift(backup);
-      if (autoBackups.length > 5) autoBackups.pop();
-      localStorage.setItem('budgetflow_autoBackups', JSON.stringify(autoBackups));
-      localStorage.setItem('budgetflow_lastAutoBackup', now.getTime().toString());
-      localStorage.setItem('budgetflow_lastBackup', now.toISOString());
-      
-      console.log('✅ Sauvegarde automatique effectuée à ' + now.toLocaleTimeString('fr-FR'));
-    };
-    
-    // Vérification immédiate
-    performAutoBackup();
-    
-    // Vérification toutes les minutes pour ne pas rater l'heure
-    const interval = setInterval(performAutoBackup, 60 * 1000);
-    
-    return () => clearInterval(interval);
-  }, [currentUser, isAuthenticated, backupSettings]);
-
-  const allCategories = useMemo(() => [...CATEGORIES, ...customCategories], [customCategories]);
-  const allBrands = useMemo(() => [...POPULAR_BRANDS, ...customBrands], [customBrands]);
-  const isAdmin = currentUser?.email === ADMIN_EMAIL || adminList.some(a => a.email === currentUser?.email);
-  const isSuperAdmin = currentUser?.email === ADMIN_EMAIL;
-  const currentAdminPermissions = currentUser?.email === ADMIN_EMAIL 
-    ? ['all'] 
-    : (adminList.find(a => a.email === currentUser?.email)?.permissions || []);
 
   const showConfirm = useCallback((title, message, onConfirm) => {
     setConfirmDialog({ show: true, title, message, onConfirm });
@@ -851,134 +763,349 @@ export default function BudgetApp() {
     setAlertDialog({ show: false, title: '', message: '', type: 'success' });
   }, []);
   
+  // ============================================
+  // FONCTIONS ADMIN
+  // ============================================
+  const loadAdminUsers = async () => {
+    if (!isAdmin) return;
+    setLoadingAdmin(true);
+    try {
+      const users = await api.getAdminUsers();
+      setAdminUsers(users || []);
+    } catch (error) {
+      console.error('Erreur chargement utilisateurs:', error);
+    }
+    setLoadingAdmin(false);
+  };
+
+  const handleToggleAdmin = async (userId, currentStatus) => {
+    try {
+      await api.setUserAdmin(userId, !currentStatus);
+      setAdminUsers(prev => prev.map(u => 
+        u.id === userId ? { ...u, is_admin: !currentStatus } : u
+      ));
+      showAlert('Succès', `Statut admin modifié`, 'success');
+    } catch (error) {
+      showAlert('Erreur', error.message, 'error');
+    }
+  };
+
+  const handleDeleteUser = async (userId, userName) => {
+    showConfirm(
+      'Supprimer utilisateur',
+      `Êtes-vous sûr de vouloir supprimer "${userName}" ? Cette action est irréversible.`,
+      async () => {
+        try {
+          await api.deleteUser(userId);
+          setAdminUsers(prev => prev.filter(u => u.id !== userId));
+          showAlert('Succès', 'Utilisateur supprimé', 'success');
+        } catch (error) {
+          showAlert('Erreur', error.message, 'error');
+        }
+        closeConfirm();
+      }
+    );
+  };
+
+  // Charger les utilisateurs quand on ouvre le panneau admin
+  useEffect(() => {
+    if (showAdminModal && isAdmin) {
+      loadAdminUsers();
+    }
+  }, [showAdminModal, isAdmin]);
+
+
   const hasPermission = (permission) => {
     if (currentUser?.email === ADMIN_EMAIL) return true;
     if (currentAdminPermissions.includes('all')) return true;
     return currentAdminPermissions.includes(permission);
   };
 
-  // Charger session
-  useEffect(() => {
-    const session = SecurityManager.loadSecure('session');
-    if (session && session.userId) {
-      const users = SecurityManager.loadSecure('users') || [];
-      const user = users.find(u => u.id === session.userId);
-      if (user && session.token === SecurityManager.hashPassword(user.id + user.email, 'SESSION')) {
-        setCurrentUser({ id: user.id, email: user.email, name: user.name });
-        setIsAuthenticated(true);
-        loadUserData(user.id);
-      } else {
-        SecurityManager.removeSecure('session');
+   const loadUserData = async () => {
+    try {
+      const data = await api.sync();
+      if (data) {
+        setTransactions(data.transactions || []);
+        setCustomCategories(data.customCategories || []);
+        setCustomBrands(data.customBrands || []);
+        setSavings(data.savings || 0);
+        setSavingsGoals(data.savingsGoals || []);
+        setCategoryBudgets(data.categoryBudgets || {});
+        setDebts(data.debts || []);
+        setQuickTemplates(data.templates || []);
+        setAchievements(data.achievements || { unlocked: [], streak: 0, lastActivity: null, points: 0 });
+        setPlannedBudget(data.plannedBudget || {});
+        
+        // Charger budgets partagés
+        const sharedData = await api.getSharedBudgets();
+        if (sharedData) setSharedBudgets(sharedData);
       }
+      
+      // Vérifier statut admin
+      try {
+        const adminData = await api.checkAdmin();
+        setIsAdmin(adminData.isAdmin || false);
+      } catch (e) {
+        setIsAdmin(false);
+      }
+    } catch (error) {
+      console.error('Erreur chargement données:', error);
     }
-  }, []);
-
-  // Sauvegarder données
-  useEffect(() => {
-    if (currentUser && isAuthenticated) {
-      SecurityManager.saveSecure(`transactions_${currentUser.id}`, transactions);
-      SecurityManager.saveSecure(`categories_${currentUser.id}`, customCategories);
-      SecurityManager.saveSecure(`brands_${currentUser.id}`, customBrands);
-
-    }
-  }, [transactions, customCategories, currentUser, isAuthenticated]);
-
-    const loadUserData = (userId) => {
-    const savedTransactions = SecurityManager.loadSecure(`transactions_${userId}`);
-    const savedCategories = SecurityManager.loadSecure(`categories_${userId}`);
-    const savedBrands = SecurityManager.loadSecure(`brands_${userId}`);
-    const savedSavings = SecurityManager.loadSecure(`savings_${userId}`);
-    if (savedTransactions) setTransactions(savedTransactions);
-    if (savedCategories) setCustomCategories(savedCategories);
-    if (savedBrands) setCustomBrands(savedBrands);
-    if (savedSavings !== null) setSavings(savedSavings);
   };
 
+  // Charger session depuis token
+useEffect(() => {
+  const checkAuth = async () => {
+    const token = api.getToken();
+    if (token) {
+      try {
+        const result = await api.verify();
+        if (result && result.user) {
+          setCurrentUser(result.user);
+          setIsAuthenticated(true);
+          loadUserData();
+        }
+      } catch (error) {
+        api.removeToken();
+      }
+    }
+  };
+  checkAuth();
+}, []);
+
+  // ============================================
+  // WEBSOCKET CONNECTION
+  // ============================================
+  useEffect(() => {
+    const token = api.getToken();
+    if (token && isAuthenticated && !socket) {
+      console.log('🔌 Connecting to WebSocket...');
+      
+     /* const newSocket = io(API_URL.replace('/api', ''), {
+        auth: { token },
+        transports: ['websocket', 'polling'],
+        reconnection: true,
+        reconnectionAttempts: 10,
+        reconnectionDelay: 1000,
+      });*/ 
+
+    const newSocket = io('https://fin.yugary-esport.fr', { // ✅ URL complète
+    auth: { token },
+    transports: ['polling', 'websocket'], // ✅ Commencer par polling
+    reconnection: true,
+    reconnectionAttempts: 10,
+    reconnectionDelay: 1000,
+    path: '/socket.io' // ✅ Chemin par défaut
+  });
+
+      newSocket.on('connect', () => {
+        console.log('✅ WebSocket connected');
+        setIsConnected(true);
+      });
+
+      newSocket.on('disconnect', () => {
+        console.log('🔌 WebSocket disconnected');
+        setIsConnected(false);
+      });
+
+      newSocket.on('connect_error', (error) => {
+        console.error('❌ WebSocket error:', error.message);
+        setIsConnected(false);
+      });
+
+      // === TRANSACTIONS ===
+      newSocket.on('transaction:created', (transaction) => {
+        console.log('📥 Transaction created:', transaction);
+        setTransactions(prev => [transaction, ...prev]);
+      });
+
+      newSocket.on('transaction:updated', (transaction) => {
+        console.log('📥 Transaction updated:', transaction);
+        setTransactions(prev => prev.map(t => t.id === transaction.id ? transaction : t));
+      });
+
+      newSocket.on('transaction:deleted', (data) => {
+        console.log('📥 Transaction deleted:', data);
+        setTransactions(prev => prev.filter(t => t.id !== data.id));
+      });
+
+      // === SAVINGS ===
+      newSocket.on('savings:updated', (data) => {
+        console.log('📥 Savings updated:', data);
+        setSavings(data.amount);
+      });
+
+      // === SAVINGS GOALS ===
+      newSocket.on('savingsGoal:created', (goal) => {
+        console.log('📥 Savings goal created:', goal);
+        setSavingsGoals(prev => [...prev, goal]);
+      });
+
+      newSocket.on('savingsGoal:updated', (goal) => {
+        console.log('📥 Savings goal updated:', goal);
+        setSavingsGoals(prev => prev.map(g => g.id === goal.id ? goal : g));
+      });
+
+      newSocket.on('savingsGoal:deleted', (data) => {
+        console.log('📥 Savings goal deleted:', data);
+        setSavingsGoals(prev => prev.filter(g => g.id !== data.id));
+      });
+
+      // === CATEGORY BUDGETS ===
+      newSocket.on('categoryBudgets:updated', (budgets) => {
+        console.log('📥 Category budgets updated:', budgets);
+        setCategoryBudgets(budgets);
+      });
+
+      // === DEBTS ===
+      newSocket.on('debt:created', (debt) => {
+        console.log('📥 Debt created:', debt);
+        setDebts(prev => [...prev, debt]);
+      });
+
+      newSocket.on('debt:updated', (debt) => {
+        console.log('📥 Debt updated:', debt);
+        setDebts(prev => prev.map(d => d.id === debt.id ? debt : d));
+      });
+
+      newSocket.on('debt:deleted', (data) => {
+        console.log('📥 Debt deleted:', data);
+        setDebts(prev => prev.filter(d => d.id !== data.id));
+      });
+
+      // === TEMPLATES ===
+      newSocket.on('template:created', (template) => {
+        console.log('📥 Template created:', template);
+        setQuickTemplates(prev => [...prev, template]);
+      });
+
+      newSocket.on('template:updated', (template) => {
+        console.log('📥 Template updated:', template);
+        setQuickTemplates(prev => prev.map(t => t.id === template.id ? template : t));
+      });
+
+      newSocket.on('template:deleted', (data) => {
+        console.log('📥 Template deleted:', data);
+        setQuickTemplates(prev => prev.filter(t => t.id !== data.id));
+      });
+
+      // === ACHIEVEMENTS ===
+      newSocket.on('achievements:updated', (data) => {
+        console.log('📥 Achievements updated:', data);
+        setAchievements(data);
+      });
+
+      // === PLANNED BUDGET ===
+      newSocket.on('plannedBudget:updated', (budget) => {
+        console.log('📥 Planned budget updated:', budget);
+        setPlannedBudget(budget);
+      });
+
+      // === SHARED BUDGETS ===
+      newSocket.on('sharedTransaction:created', (data) => {
+        console.log('📥 Shared transaction created:', data);
+        setSharedBudgets(prev => prev.map(b => {
+          if (b.id === data.budgetId) {
+            return { ...b, transactions: [data.transaction, ...b.transactions] };
+          }
+          return b;
+        }));
+      });
+
+      newSocket.on('sharedTransaction:deleted', (data) => {
+        console.log('📥 Shared transaction deleted:', data);
+        setSharedBudgets(prev => prev.map(b => {
+          if (b.id === data.budgetId) {
+            return { ...b, transactions: b.transactions.filter(t => t.id !== data.transactionId) };
+          }
+          return b;
+        }));
+      });
+
+      newSocket.on('sharedSavings:updated', (data) => {
+        console.log('📥 Shared savings updated:', data);
+        setSharedBudgets(prev => prev.map(b => {
+          if (b.id === data.budgetId) {
+            return { ...b, savings: data.amount };
+          }
+          return b;
+        }));
+      });
+
+      setSocket(newSocket);
+
+      return () => {
+        console.log('🔌 Cleaning up WebSocket...');
+        newSocket.disconnect();
+      };
+    }
+  }, [isAuthenticated, socket]);
+
+  // Déconnecter WebSocket au logout
+  useEffect(() => {
+    if (!isAuthenticated && socket) {
+      socket.disconnect();
+      setSocket(null);
+      setIsConnected(false);
+    }
+  }, [isAuthenticated, socket]);
+  
 
   // ============================================
   // AUTHENTIFICATION
   // ============================================
 
   const handleRegister = async (e) => {
-    e.preventDefault();
-    setAuthLoading(true);
-    setAuthError('');
+  e.preventDefault();
+  setAuthLoading(true);
+  setAuthError('');
 
-    const formData = new FormData(e.target);
-    const email = formData.get('email')?.trim().toLowerCase();
-    const password = formData.get('password');
-    const confirmPassword = formData.get('confirmPassword');
-    const name = formData.get('name')?.trim();
-    const secretQuestion = formData.get('secretQuestion');
-    const secretAnswer = formData.get('secretAnswer')?.trim();
+  const formData = new FormData(e.target);
+  const email = formData.get('email')?.trim().toLowerCase();
+  const password = formData.get('password');
+  const confirmPassword = formData.get('confirmPassword');
+  const name = formData.get('name')?.trim();
+  const secretQuestion = formData.get('secretQuestion');
+  const secretAnswer = formData.get('secretAnswer')?.trim();
 
-    // Validations
-    if (!email || !password || !name || !secretQuestion || !secretAnswer) {
-      setAuthError('Tous les champs sont requis');
-      setAuthLoading(false);
-      return;
-    }
-
-    if (password !== confirmPassword) {
-      setAuthError('Les mots de passe ne correspondent pas');
-      setAuthLoading(false);
-      return;
-    }
-
-    if (password.length < 8) {
-      setAuthError('Le mot de passe doit contenir au moins 8 caractères');
-      setAuthLoading(false);
-      return;
-    }
-
-    if (!/[A-Z]/.test(password) || !/[0-9]/.test(password)) {
-      setAuthError('Le mot de passe doit contenir au moins une majuscule et un chiffre');
-      setAuthLoading(false);
-      return;
-    }
-
-    if (secretAnswer.length < 2) {
-      setAuthError('La réponse secrète est trop courte');
-      setAuthLoading(false);
-      return;
-    }
-
-    const users = SecurityManager.loadSecure('users') || [];
-    if (users.find(u => u.email === email)) {
-      setAuthError('Cet email est déjà utilisé');
-      setAuthLoading(false);
-      return;
-    }
-
-    const userId = generateId();
-    const salt = generateId();
-    
-    const newUser = {
-      id: userId,
-      email,
-      name,
-      password: SecurityManager.hashPassword(password, salt),
-      salt,
-      secretQuestion,
-      secretAnswer: SecurityManager.hashSecretAnswer(secretAnswer),
-      createdAt: new Date().toISOString(),
-      lastLogin: new Date().toISOString()
-    };
-
-    users.push(newUser);
-    SecurityManager.saveSecure('users', users);
-
-    // Créer session
-    const sessionToken = SecurityManager.hashPassword(userId + email, 'SESSION');
-    SecurityManager.saveSecure('session', { userId, token: sessionToken });
-
-    setCurrentUser({ id: userId, email, name });
-    setIsAuthenticated(true);
+  if (!email || !password || !name || !secretQuestion || !secretAnswer) {
+    setAuthError('Tous les champs sont requis');
     setAuthLoading(false);
-  };
+    return;
+  }
+
+  if (password !== confirmPassword) {
+    setAuthError('Les mots de passe ne correspondent pas');
+    setAuthLoading(false);
+    return;
+  }
+
+  if (password.length < 8) {
+    setAuthError('Le mot de passe doit contenir au moins 8 caractères');
+    setAuthLoading(false);
+    return;
+  }
+
+  if (!/[A-Z]/.test(password) || !/[0-9]/.test(password)) {
+    setAuthError('Le mot de passe doit contenir au moins une majuscule et un chiffre');
+    setAuthLoading(false);
+    return;
+  }
+
+  try {
+    const result = await api.register(email, password, name, secretQuestion, secretAnswer);
+    setCurrentUser(result.user);
+    setIsAuthenticated(true);
+    loadUserData();
+  } catch (error) {
+    setAuthError(error.message || 'Erreur lors de l\'inscription');
+  }
+  setAuthLoading(false);
+};
 
   const handleLogin = async (e) => {
     e.preventDefault();
+    console.log('handleLogin appelé !'); // AJOUTE CETTE LIGNE
     setAuthLoading(true);
     setAuthError('');
 
@@ -986,139 +1113,137 @@ export default function BudgetApp() {
     const email = formData.get('email')?.trim().toLowerCase();
     const password = formData.get('password');
 
-    const users = SecurityManager.loadSecure('users') || [];
-    const user = users.find(u => u.email === email);
-
-    if (!user) {
-      setAuthError('Email ou mot de passe incorrect');
-      setAuthLoading(false);
-      return;
+    try {
+      const result = await api.login(email, password);
+      setCurrentUser(result.user);
+      setIsAuthenticated(true);
+      loadUserData();
+    } catch (error) {
+      setAuthError(error.message || 'Email ou mot de passe incorrect');
     }
-
-    const hashedPassword = SecurityManager.hashPassword(password, user.salt);
-    if (user.password !== hashedPassword) {
-      setAuthError('Email ou mot de passe incorrect');
-      setAuthLoading(false);
-      return;
-    }
-
-    // Mettre à jour lastLogin
-    user.lastLogin = new Date().toISOString();
-    SecurityManager.saveSecure('users', users);
-
-    // Créer session
-    const sessionToken = SecurityManager.hashPassword(user.id + email, 'SESSION');
-    SecurityManager.saveSecure('session', { userId: user.id, token: sessionToken });
-
-    setCurrentUser({ id: user.id, email: user.email, name: user.name });
-    setIsAuthenticated(true);
-    loadUserData(user.id);
     setAuthLoading(false);
   };
 
-  const handleForgotPassword = (e) => {
-    e.preventDefault();
-    setAuthError('');
-    setAuthSuccess('');
+  const handleForgotPassword = async (e) => {
+  e.preventDefault();
+  setAuthError('');
 
-    const email = forgotEmail.trim().toLowerCase();
-    const users = SecurityManager.loadSecure('users') || [];
-    const user = users.find(u => u.email === email);
+  const formData = new FormData(e.target);
+  const email = formData.get('email')?.trim().toLowerCase();
 
-    if (!user) {
-      setAuthError('Aucun compte trouvé avec cet email');
-      return;
-    }
+  if (!email) {
+    setAuthError('Entrez votre email');
+    return;
+  }
 
-    setForgotUser(user);
+  try {
+    const result = await api.forgotPassword(email);
+    setForgotEmail(email);
+    setForgotUser({ secretQuestion: result.secretQuestion });
     setAuthMode('reset');
-  };
+  } catch (error) {
+    setAuthError(error.message || 'Email non trouvé');
+  }
+};
 
-  const handleResetPassword = (e) => {
-    e.preventDefault();
-    setAuthError('');
-    setAuthSuccess('');
+  const handleResetPassword = async (e) => {
+  e.preventDefault();
+  setAuthError('');
 
-    const formData = new FormData(e.target);
-    const secretAnswer = formData.get('secretAnswer')?.trim();
-    const newPassword = formData.get('newPassword');
-    const confirmPassword = formData.get('confirmPassword');
+  const formData = new FormData(e.target);
+  const secretAnswer = formData.get('secretAnswer')?.trim();
+  const newPassword = formData.get('newPassword');
+  const confirmPassword = formData.get('confirmPassword');
 
-    if (!secretAnswer || !newPassword || !confirmPassword) {
-      setAuthError('Tous les champs sont requis');
-      return;
-    }
+  if (newPassword !== confirmPassword) {
+    setAuthError('Les mots de passe ne correspondent pas');
+    return;
+  }
 
-    const hashedAnswer = SecurityManager.hashSecretAnswer(secretAnswer);
-    if (hashedAnswer !== forgotUser.secretAnswer) {
-      setAuthError('Réponse secrète incorrecte');
-      return;
-    }
+  if (newPassword.length < 8 || !/[A-Z]/.test(newPassword) || !/[0-9]/.test(newPassword)) {
+    setAuthError('Le mot de passe doit contenir au moins 8 caractères, une majuscule et un chiffre');
+    return;
+  }
 
-    if (newPassword !== confirmPassword) {
-      setAuthError('Les mots de passe ne correspondent pas');
-      return;
-    }
+  try {
+    await api.resetPassword(forgotEmail, secretAnswer, newPassword);
+    setAuthSuccess('Mot de passe réinitialisé ! Vous pouvez vous connecter.');
+    setAuthMode('login');
+    setForgotUser(null);
+    setForgotEmail('');
+  } catch (error) {
+    setAuthError(error.message || 'Réponse incorrecte');
+  }
+};
 
-    if (newPassword.length < 8 || !/[A-Z]/.test(newPassword) || !/[0-9]/.test(newPassword)) {
-      setAuthError('Le mot de passe doit contenir au moins 8 caractères, une majuscule et un chiffre');
-      return;
-    }
-
-    // Mettre à jour le mot de passe
-    const users = SecurityManager.loadSecure('users') || [];
-    const userIndex = users.findIndex(u => u.id === forgotUser.id);
-    
-    if (userIndex !== -1) {
-      const newSalt = generateId();
-      users[userIndex].password = SecurityManager.hashPassword(newPassword, newSalt);
-      users[userIndex].salt = newSalt;
-      SecurityManager.saveSecure('users', users);
-
-      setAuthSuccess('Mot de passe modifié avec succès ! Vous pouvez maintenant vous connecter.');
-      setAuthMode('login');
-      setForgotUser(null);
-      setForgotEmail('');
-    }
-  };
-
-  const handleLogout = () => {
-    SecurityManager.removeSecure('session');
-    setCurrentUser(null);
-    setIsAuthenticated(false);
-    setTransactions([]);
-    setCustomCategories([]);
-  };
+  const handleLogout = async () => {
+  try {
+    await api.logout();
+  } catch (error) {
+    console.error('Logout error:', error);
+  }
+  api.removeToken();
+  setCurrentUser(null);
+  setIsAuthenticated(false);
+  setTransactions([]);
+  setCustomCategories([]);
+  setCustomBrands([]);
+  setSavings(0);
+  setSavingsGoals([]);
+  setDebts([]);
+  setQuickTemplates([]);
+  setSharedBudgets([]);
+  setCurrentSharedBudget(null);
+};
 
   // ============================================
   // TRANSACTIONS
   // ============================================
 
-  const handleSubmitTransaction = useCallback((formData) => {
-    const transaction = {
-      id: editingTransaction ? editingTransaction.id : generateId(),
-      ...formData,
-      amount: parseFloat(formData.amount),
-      type: modalType,
-      createdAt: editingTransaction ? editingTransaction.createdAt : new Date().toISOString()
-    };
+const handleSubmitTransaction = useCallback(async (formData) => {
+  const transactionData = {
+    ...formData,
+    amount: parseFloat(formData.amount),
+    type: modalType,
+  };
 
+  try {
     if (editingTransaction) {
-      setTransactions(prev => prev.map(t => t.id === transaction.id ? transaction : t));
+      // Modification
+      const updated = await api.updateTransaction(editingTransaction.id, transactionData);
+      if (updated) {
+        setTransactions(prev => prev.map(t => t.id === editingTransaction.id ? updated : t));
+      }
     } else {
-      setTransactions(prev => [...prev, transaction]);
+      // Ajout
+      const newTransaction = await api.addTransaction(transactionData);
+      if (newTransaction) {
+        setTransactions(prev => [...prev, newTransaction]);
+        // checkAchievements appelé automatiquement via useEffect
+      }
     }
-
     setShowModal(false);
     setEditingTransaction(null);
-  }, [editingTransaction, modalType]);
+  } catch (error) {
+    console.error('Erreur transaction:', error);
+    showAlert('Erreur', 'Impossible de sauvegarder la transaction', 'error');
+  }
+}, [editingTransaction, modalType, showAlert]);
 
-  const deleteTransaction = useCallback((id) => {
+const deleteTransaction = useCallback((id) => {
     const transaction = transactions.find(t => t.id === id);
     showConfirm(
       'Supprimer la transaction',
       `Voulez-vous vraiment supprimer "${transaction?.name || 'cette transaction'}" ?`,
-      () => setTransactions(prev => prev.filter(t => t.id !== id))
+      async () => {
+        try {
+          await api.deleteTransaction(id);
+          setTransactions(prev => prev.filter(t => t.id !== id));
+        } catch (error) {
+          console.error('Erreur suppression:', error);
+          showAlert('Erreur', 'Impossible de supprimer la transaction', 'error');
+        }
+      }
     );
   }, [transactions, showConfirm]);
 
@@ -1295,106 +1420,91 @@ export default function BudgetApp() {
   }, [transactions, savings, notificationSettings, getUpcomingPayments]);
   
     // Fonctions budget partagé
-  const createSharedBudget = (name) => {
-    const newBudget = {
-      id: generateId(),
-      name: name,
-      createdBy: currentUser.id,
-      createdAt: new Date().toISOString(),
-      members: [{
-        userId: currentUser.id,
-        userName: currentUser.name,
-        email: currentUser.email,
-        role: 'owner',
-        joinedAt: new Date().toISOString()
-      }],
-      inviteCode: Math.random().toString(36).substring(2, 8).toUpperCase(),
-      transactions: [],
-      categories: [],
-      savings: 0
-    };
-    setSharedBudgets(prev => [...prev, newBudget]);
-    setCurrentSharedBudget(newBudget);
-    localStorage.setItem(`budgetflow_currentShared_${currentUser.id}`, newBudget.id);
-    return newBudget;
-  };
-
-  const joinSharedBudget = (inviteCode) => {
-    const budget = sharedBudgets.find(b => b.inviteCode === inviteCode);
-    if (!budget) return { success: false, message: 'Code invalide' };
-    if (budget.members.find(m => m.userId === currentUser.id)) {
-      return { success: false, message: 'Vous êtes déjà membre' };
+  const createSharedBudget = async (name) => {
+    try {
+      const newBudget = await api.createSharedBudget(name);
+      if (newBudget) {
+        setSharedBudgets(prev => [...prev, newBudget]);
+        setCurrentSharedBudget(newBudget);
+        localStorage.setItem(`budgetflow_currentShared_${currentUser.id}`, newBudget.id);
+        return newBudget;
+      }
+    } catch (error) {
+      console.error('Erreur création budget partagé:', error);
+      showAlert('Erreur', 'Impossible de créer le budget partagé', 'error');
     }
-    
-    const updatedBudget = {
-      ...budget,
-      members: [...budget.members, {
-        userId: currentUser.id,
-        userName: currentUser.name,
-        email: currentUser.email,
-        role: 'member',
-        joinedAt: new Date().toISOString()
-      }]
-    };
-    
-    setSharedBudgets(prev => prev.map(b => b.id === budget.id ? updatedBudget : b));
-    setCurrentSharedBudget(updatedBudget);
-    localStorage.setItem(`budgetflow_currentShared_${currentUser.id}`, updatedBudget.id);
-    return { success: true, budget: updatedBudget };
   };
 
-  const leaveSharedBudget = (budgetId) => {
-    const budget = sharedBudgets.find(b => b.id === budgetId);
-    if (!budget) return;
-    
-    if (budget.createdBy === currentUser.id) {
-      // Si c'est le créateur, supprimer le budget
+  const joinSharedBudget = async (inviteCode) => {
+    try {
+      const result = await api.joinSharedBudget(inviteCode);
+      if (result && result.success) {
+        // Recharger tous les budgets partagés
+        const budgets = await api.getSharedBudgets();
+        if (budgets) {
+          setSharedBudgets(budgets);
+          const joinedBudget = budgets.find(b => b.id === result.budgetId);
+          if (joinedBudget) {
+            setCurrentSharedBudget(joinedBudget);
+            localStorage.setItem(`budgetflow_currentShared_${currentUser.id}`, joinedBudget.id);
+          }
+        }
+        return { success: true, message: result.message };
+      }
+    } catch (error) {
+      console.error('Erreur rejoindre budget:', error);
+      return { success: false, message: error.message || 'Code invalide' };
+    }
+  };
+
+  const leaveSharedBudget = async (budgetId) => {
+    try {
+      await api.leaveSharedBudget(budgetId);
       setSharedBudgets(prev => prev.filter(b => b.id !== budgetId));
-    } else {
-      // Sinon, retirer le membre
+      if (currentSharedBudget?.id === budgetId) {
+        setCurrentSharedBudget(null);
+        localStorage.removeItem(`budgetflow_currentShared_${currentUser.id}`);
+      }
+    } catch (error) {
+      console.error('Erreur quitter budget:', error);
+      showAlert('Erreur', error.message || 'Impossible de quitter le budget', 'error');
+    }
+  };
+
+  const addSharedTransaction = async (transaction) => {
+    if (!currentSharedBudget) return;
+    
+    try {
+      const newTransaction = await api.addSharedTransaction(currentSharedBudget.id, transaction);
+      if (newTransaction) {
+        const updatedBudget = {
+          ...currentSharedBudget,
+          transactions: [...currentSharedBudget.transactions, newTransaction]
+        };
+        setSharedBudgets(prev => prev.map(b => b.id === currentSharedBudget.id ? updatedBudget : b));
+        setCurrentSharedBudget(updatedBudget);
+      }
+    } catch (error) {
+      console.error('Erreur ajout transaction partagée:', error);
+      showAlert('Erreur', 'Impossible d\'ajouter la transaction', 'error');
+    }
+  };
+
+  const deleteSharedTransaction = async (transactionId) => {
+    if (!currentSharedBudget) return;
+    
+    try {
+      await api.deleteSharedTransaction(currentSharedBudget.id, transactionId);
       const updatedBudget = {
-        ...budget,
-        members: budget.members.filter(m => m.userId !== currentUser.id)
+        ...currentSharedBudget,
+        transactions: currentSharedBudget.transactions.filter(t => t.id !== transactionId)
       };
-      setSharedBudgets(prev => prev.map(b => b.id === budgetId ? updatedBudget : b));
+      setSharedBudgets(prev => prev.map(b => b.id === currentSharedBudget.id ? updatedBudget : b));
+      setCurrentSharedBudget(updatedBudget);
+    } catch (error) {
+      console.error('Erreur suppression transaction partagée:', error);
+      showAlert('Erreur', 'Impossible de supprimer la transaction', 'error');
     }
-    
-    if (currentSharedBudget?.id === budgetId) {
-      setCurrentSharedBudget(null);
-      localStorage.removeItem(`budgetflow_currentShared_${currentUser.id}`);
-    }
-  };
-
-  const addSharedTransaction = (transaction) => {
-    if (!currentSharedBudget) return;
-    
-    const newTransaction = {
-      ...transaction,
-      id: generateId(),
-      addedBy: currentUser.id,
-      addedByName: currentUser.name,
-      createdAt: new Date().toISOString()
-    };
-    
-    const updatedBudget = {
-      ...currentSharedBudget,
-      transactions: [...currentSharedBudget.transactions, newTransaction]
-    };
-    
-    setSharedBudgets(prev => prev.map(b => b.id === currentSharedBudget.id ? updatedBudget : b));
-    setCurrentSharedBudget(updatedBudget);
-  };
-
-  const deleteSharedTransaction = (transactionId) => {
-    if (!currentSharedBudget) return;
-    
-    const updatedBudget = {
-      ...currentSharedBudget,
-      transactions: currentSharedBudget.transactions.filter(t => t.id !== transactionId)
-    };
-    
-    setSharedBudgets(prev => prev.map(b => b.id === currentSharedBudget.id ? updatedBudget : b));
-    setCurrentSharedBudget(updatedBudget);
   };
 
       // Calcul des budgets par catégorie
@@ -2104,7 +2214,7 @@ export default function BudgetApp() {
               { id: 'budgets', label: 'Budgets', icon: '🎯' },
               { id: 'planning', label: 'Planification', icon: '📋' },
               { id: 'shared', label: 'Budget Partagé', icon: '👨‍👩‍👧‍👦' },
-              ...(isAdmin ? [{ id: 'admin', label: 'Administration', icon: '⚙️' }] : []),
+              ...(isSuperAdmin ? [{ id: 'admin', label: 'Administration', icon: '⚙️' }] : []),
             ].map(view => (
               <button
                 key={view.id}
@@ -2663,10 +2773,9 @@ export default function BudgetApp() {
                           </p>
                           <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-all">
                             <button
-                              onClick={(e) => {
+                              onClick={async (e) => {
                                 e.stopPropagation();
-                                const template = {
-                                  id: generateId(),
+                                const templateData = {
                                   name: transaction.name,
                                   amount: transaction.amount,
                                   type: transaction.type,
@@ -2675,8 +2784,15 @@ export default function BudgetApp() {
                                   recurring: transaction.recurring,
                                   isFixedExpense: transaction.isFixedExpense
                                 };
-                                setQuickTemplates(prev => [...prev, template]);
-                                showAlert('Template créé', 'Le template a été créé avec succès.', 'success');
+                                try {
+                                  const newTemplate = await api.addTemplate(templateData);
+                                  if (newTemplate) {
+                                    setQuickTemplates(prev => [...prev, newTemplate]);
+                                    showAlert('Template créé', 'Le template a été créé avec succès.', 'success');
+                                  }
+                                } catch (error) {
+                                  console.error('Erreur création template:', error);
+                                }
                               }}
                               className="p-2 rounded-lg bg-purple-500/20 text-purple-400 hover:bg-purple-500/30"
                               title="Créer un template"
@@ -2700,7 +2816,7 @@ export default function BudgetApp() {
           </div>
         )}
 
-{/* STATISTICS */}
+        {/* STATISTICS */}
         {currentView === 'statistics' && (
           <div className="space-y-6">
             {/* Onglets d'analyse */}
@@ -3349,7 +3465,14 @@ export default function BudgetApp() {
                                 showConfirm(
                                   'Supprimer l\'objectif',
                                   `Voulez-vous vraiment supprimer "${goal.name}" ?`,
-                                  () => setSavingsGoals(prev => prev.filter(g => g.id !== goal.id))
+                                  async () => {
+                                    try {
+                                      await api.deleteSavingsGoal(goal.id);
+                                      setSavingsGoals(prev => prev.filter(g => g.id !== goal.id));
+                                    } catch (error) {
+                                      console.error('Erreur suppression objectif:', error);
+                                    }
+                                  }
                                 );
                               }}
                               className="p-2 rounded-lg bg-rose-500/20 text-rose-400 hover:bg-rose-500/30"
@@ -3394,10 +3517,16 @@ export default function BudgetApp() {
                             {[10, 50, 100].map(amount => (
                               <button
                                 key={amount}
-                                onClick={() => {
-                                  setSavingsGoals(prev => prev.map(g => 
-                                    g.id === goal.id ? {...g, current: Math.min(g.current + amount, g.target)} : g
-                                  ));
+                                onClick={async () => {
+                                  const newCurrent = Math.min(goal.current + amount, goal.target);
+                                  try {
+                                    await api.updateSavingsGoal(goal.id, { ...goal, current: newCurrent });
+                                    setSavingsGoals(prev => prev.map(g => 
+                                      g.id === goal.id ? {...g, current: newCurrent} : g
+                                    ));
+                                  } catch (error) {
+                                    console.error('Erreur mise à jour objectif:', error);
+                                  }
                                 }}
                                 className={`flex-1 py-2 rounded-lg text-xs font-medium ${darkMode ? 'bg-slate-600 text-slate-300 hover:bg-slate-500' : 'bg-gray-200 text-gray-600 hover:bg-gray-300'} transition-all`}
                               >
@@ -3540,7 +3669,14 @@ export default function BudgetApp() {
                                 showConfirm(
                                   'Supprimer la dette',
                                   `Voulez-vous vraiment supprimer "${debt.name}" ?`,
-                                  () => setDebts(prev => prev.filter(d => d.id !== debt.id))
+                                  async () => {
+                                    try {
+                                      await api.deleteDebt(debt.id);
+                                      setDebts(prev => prev.filter(d => d.id !== debt.id));
+                                    } catch (error) {
+                                      console.error('Erreur suppression dette:', error);
+                                    }
+                                  }
                                 );
                               }}
                               className="p-2 rounded-lg bg-rose-500/20 text-rose-400 hover:bg-rose-500/30"
@@ -3603,18 +3739,17 @@ export default function BudgetApp() {
                                 <p className="text-lg font-bold text-amber-400">{formatCurrency(nextPayment.amount)}</p>
                               </div>
                               <button
-                                onClick={() => {
-                                  setDebts(prev => prev.map(d => {
-                                    if (d.id === debt.id) {
-                                      return {
-                                        ...d,
-                                        schedule: d.schedule.map(s => 
-                                          s.id === nextPayment.id ? {...s, paid: true, paidDate: new Date().toISOString()} : s
-                                        )
-                                      };
-                                    }
-                                    return d;
-                                  }));
+                                onClick={async () => {
+                                  const updatedSchedule = debt.schedule.map(s => 
+                                    s.id === nextPayment.id ? {...s, paid: true, paidDate: new Date().toISOString()} : s
+                                  );
+                                  const updatedDebt = { ...debt, schedule: updatedSchedule };
+                                  try {
+                                    await api.updateDebt(debt.id, updatedDebt);
+                                    setDebts(prev => prev.map(d => d.id === debt.id ? updatedDebt : d));
+                                  } catch (error) {
+                                    console.error('Erreur mise à jour dette:', error);
+                                  }
                                 }}
                                 className="px-4 py-2 rounded-xl bg-gradient-to-r from-emerald-500 to-cyan-500 text-white font-medium text-sm"
                               >
@@ -3649,18 +3784,17 @@ export default function BudgetApp() {
                                       <span className="text-emerald-400">✓</span>
                                     ) : (
                                       <button
-                                        onClick={() => {
-                                          setDebts(prev => prev.map(d => {
-                                            if (d.id === debt.id) {
-                                              return {
-                                                ...d,
-                                                schedule: d.schedule.map(s => 
-                                                  s.id === row.id ? {...s, paid: true, paidDate: new Date().toISOString()} : s
-                                                )
-                                              };
-                                            }
-                                            return d;
-                                          }));
+                                        onClick={async () => {
+                                          const updatedSchedule = debt.schedule.map(s => 
+                                            s.id === row.id ? {...s, paid: true, paidDate: new Date().toISOString()} : s
+                                          );
+                                          const updatedDebt = { ...debt, schedule: updatedSchedule };
+                                          try {
+                                            await api.updateDebt(debt.id, updatedDebt);
+                                            setDebts(prev => prev.map(d => d.id === debt.id ? updatedDebt : d));
+                                          } catch (error) {
+                                            console.error('Erreur mise à jour dette:', error);
+                                          }
                                         }}
                                         className={`px-2 py-0.5 rounded text-xs ${darkMode ? 'bg-slate-600 hover:bg-slate-500' : 'bg-gray-200 hover:bg-gray-300'}`}
                                       >
@@ -4005,7 +4139,7 @@ export default function BudgetApp() {
         )}
 
         {/* ADMIN */}
-        {currentView === 'admin' && isAdmin && (
+        {currentView === 'admin' && isSuperAdmin && (
           <div className="space-y-6">
             <div className={`p-6 rounded-2xl ${darkMode ? 'bg-slate-800/50 border-slate-700' : 'bg-white border-gray-200'} border backdrop-blur-sm`}>
               <h3 className={`text-lg font-semibold mb-2 ${darkMode ? 'text-white' : 'text-gray-900'}`}>⚙️ Panneau d'administration</h3>
@@ -4047,7 +4181,14 @@ export default function BudgetApp() {
                       showConfirm(
                         'Supprimer la catégorie',
                         `Voulez-vous vraiment supprimer "${cat.name}" ?`,
-                        () => setCustomCategories(prev => prev.filter(c => c.id !== cat.id))
+                        async () => {
+                          try {
+                            await api.deleteCustomCategory(cat.id);
+                            setCustomCategories(prev => prev.filter(c => c.id !== cat.id));
+                          } catch (error) {
+                            console.error('Erreur suppression catégorie:', error);
+                          }
+                        }
                       );
                     }}
                       className="opacity-0 group-hover:opacity-100 p-1 rounded bg-red-500/20 text-red-400 text-xs">✕</button>
@@ -4084,7 +4225,14 @@ export default function BudgetApp() {
                       showConfirm(
                         'Supprimer la marque',
                         `Voulez-vous vraiment supprimer "${brand.name}" ?`,
-                        () => setCustomBrands(prev => prev.filter(b => b.id !== brand.id))
+                        async () => {
+                          try {
+                            await api.deleteCustomBrand(brand.id);
+                            setCustomBrands(prev => prev.filter(b => b.id !== brand.id));
+                          } catch (error) {
+                            console.error('Erreur suppression marque:', error);
+                          }
+                        }
                       );
                     }}
                       className="opacity-0 group-hover:opacity-100 p-1 rounded bg-red-500/20 text-red-400 text-xs">✕</button>
@@ -4097,272 +4245,110 @@ export default function BudgetApp() {
 
             {/* Sauvegarde et Restauration */}
             {hasPermission('manage_backups') && (
-            <div className={`p-6 rounded-2xl ${darkMode ? 'bg-slate-800/50 border-slate-700' : 'bg-white border-gray-200'} border backdrop-blur-sm`}>
-              <div className="flex items-center justify-between mb-4">
-                <h4 className={`font-semibold ${darkMode ? 'text-white' : 'text-gray-900'}`}>💾 Sauvegarde & Restauration</h4>
-              </div>
-              
-              <div className="space-y-4">
-                {/* Paramètres sauvegarde auto */}
-                <div className={`p-4 rounded-xl ${darkMode ? 'bg-slate-700/50' : 'bg-gray-100'}`}>
-                  <div className="flex items-center justify-between mb-3">
-                    <div>
-                      <p className={`font-medium ${darkMode ? 'text-white' : 'text-gray-900'}`}>🔄 Sauvegarde automatique</p>
-                      <p className={`text-xs ${darkMode ? 'text-slate-400' : 'text-gray-500'}`}>
-                        Dernière : {(() => {
-                          const lastBackup = localStorage.getItem('budgetflow_lastBackup');
-                          return lastBackup ? new Date(lastBackup).toLocaleString('fr-FR') : 'Jamais';
-                        })()}
-                      </p>
-                    </div>
-                    <input
-                      type="checkbox"
-                      checked={backupSettings.autoBackupEnabled}
-                      onChange={(e) => setBackupSettings({...backupSettings, autoBackupEnabled: e.target.checked})}
-                      className="w-5 h-5 rounded text-emerald-500 focus:ring-emerald-500"
-                    />
-                  </div>
-                  
-                  {backupSettings.autoBackupEnabled && (
-                    <div className="flex items-center gap-3">
-                      <span className={`text-sm ${darkMode ? 'text-slate-400' : 'text-gray-500'}`}>Heure :</span>
-                      <select
-                        value={backupSettings.autoBackupHour}
-                        onChange={(e) => setBackupSettings({...backupSettings, autoBackupHour: parseInt(e.target.value)})}
-                        className={`flex-1 px-3 py-2 rounded-lg ${darkMode ? 'bg-slate-600 text-white border-slate-500' : 'bg-white text-gray-900 border-gray-300'} border`}
-                      >
-                        {Array.from({length: 24}, (_, i) => (
-                          <option key={i} value={i}>{i.toString().padStart(2, '0')}:00</option>
-                        ))}
-                      </select>
-                    </div>
-                  )}
-                </div>
-
-                {/* Boutons d'action */}
-                <div className="grid grid-cols-3 gap-2">
-                  {/* Sauvegarde manuelle */}
-                  <button
-                    onClick={() => {
-                      const backup = {
-                        version: '1.0',
-                        date: new Date().toISOString(),
-                        type: 'manual',
-                        users: SecurityManager.loadSecure('users') || [],
-                        data: {}
-                      };
-                      
-                      const users = SecurityManager.loadSecure('users') || [];
-                      users.forEach(user => {
-                        backup.data[user.id] = {
-                          transactions: SecurityManager.loadSecure(`transactions_${user.id}`) || [],
-                          categories: SecurityManager.loadSecure(`categories_${user.id}`) || [],
-                          brands: SecurityManager.loadSecure(`brands_${user.id}`) || [],
-                          savings: SecurityManager.loadSecure(`savings_${user.id}`) || 0
-                        };
-                      });
-                      
-                      const autoBackups = JSON.parse(localStorage.getItem('budgetflow_autoBackups') || '[]');
-                      autoBackups.unshift(backup);
-                      if (autoBackups.length > 5) autoBackups.pop();
-                      localStorage.setItem('budgetflow_autoBackups', JSON.stringify(autoBackups));
-                      localStorage.setItem('budgetflow_lastBackup', new Date().toISOString());
-                      
-                      showAlert('Sauvegarde effectuée', 'La sauvegarde manuelle a été créée avec succès.', 'success');
-                      setTimeout(() => window.location.reload(), 1500);
-                    }}
-                    className={`flex flex-col items-center justify-center gap-1 p-3 rounded-xl ${darkMode ? 'bg-blue-500/20 text-blue-400 hover:bg-blue-500/30' : 'bg-blue-100 text-blue-600 hover:bg-blue-200'} transition-all`}
-                  >
-                    <span className="text-xl">💾</span>
-                    <span className="text-xs font-medium">Sauvegarder</span>
-                  </button>
-                  
-                  {/* Exporter */}
-                  <button
-                    onClick={() => {
-                      const backup = {
-                        version: '1.0',
-                        date: new Date().toISOString(),
-                        type: 'export',
-                        users: SecurityManager.loadSecure('users') || [],
-                        data: {}
-                      };
-                      
-                      const users = SecurityManager.loadSecure('users') || [];
-                      users.forEach(user => {
-                        backup.data[user.id] = {
-                          transactions: SecurityManager.loadSecure(`transactions_${user.id}`) || [],
-                          categories: SecurityManager.loadSecure(`categories_${user.id}`) || [],
-                          brands: SecurityManager.loadSecure(`brands_${user.id}`) || [],
-                          savings: SecurityManager.loadSecure(`savings_${user.id}`) || 0
-                        };
-                      });
-                      
-                      const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' });
-                      const url = URL.createObjectURL(blob);
-                      const a = document.createElement('a');
-                      a.href = url;
-                      a.download = `budgetflow_backup_${new Date().toISOString().split('T')[0]}.json`;
-                      a.click();
-                      URL.revokeObjectURL(url);
-                      
-                      localStorage.setItem('budgetflow_lastBackup', new Date().toISOString());
-                      showAlert('Exportation réussie', 'Le fichier de sauvegarde a été téléchargé.', 'success');
-                    }}
-                    className={`flex flex-col items-center justify-center gap-1 p-3 rounded-xl ${darkMode ? 'bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500/30' : 'bg-emerald-100 text-emerald-600 hover:bg-emerald-200'} transition-all`}
-                  >
-                    <span className="text-xl">📥</span>
-                    <span className="text-xs font-medium">Exporter</span>
-                  </button>
-                  
-                  {/* Importer */}
-                  <label className={`flex flex-col items-center justify-center gap-1 p-3 rounded-xl ${darkMode ? 'bg-purple-500/20 text-purple-400 hover:bg-purple-500/30' : 'bg-purple-100 text-purple-600 hover:bg-purple-200'} transition-all cursor-pointer`}>
-                    <span className="text-xl">📤</span>
-                    <span className="text-xs font-medium">Importer</span>
-                    <input
-                      type="file"
-                      accept=".json"
-                      className="hidden"
-                      onChange={(e) => {
-                        const file = e.target.files[0];
-                        if (!file) return;
-                        
-                        const reader = new FileReader();
-                        reader.onload = (event) => {
-                          try {
-                            const backup = JSON.parse(event.target.result);
-                            
-                            if (!backup.version || !backup.users || !backup.data) {
-                              showAlert('Erreur', 'Fichier de sauvegarde invalide.', 'error');
-                              return;
-                            }
-                            
-                            showConfirm(
-                              'Restaurer la sauvegarde',
-                              `Restaurer la sauvegarde du ${new Date(backup.date).toLocaleString('fr-FR')} ? ⚠️ Cela écrasera toutes les données actuelles !`,
-                              () => {
-                                SecurityManager.saveSecure('users', backup.users);
-                            
-                                Object.keys(backup.data).forEach(userId => {
-                                  const userData = backup.data[userId];
-                                  SecurityManager.saveSecure(`transactions_${userId}`, userData.transactions);
-                                  SecurityManager.saveSecure(`categories_${userId}`, userData.categories);
-                                  SecurityManager.saveSecure(`brands_${userId}`, userData.brands);
-                                  SecurityManager.saveSecure(`savings_${userId}`, userData.savings);
-                                });
-                            
-                                showAlert('Restauration réussie', 'Les données ont été restaurées. La page va se recharger.', 'success');
-                                setTimeout(() => window.location.reload(), 1500);
-                              }
-                            );
-                            return;
-                          } catch (err) {
-                            showAlert('Erreur', 'Erreur lors de la lecture du fichier.', 'error');
-                          }
-                        };
-                        reader.readAsText(file);
-                      }}
-                            
-                    
-                    />
-                  </label>
+              <div className={`p-6 rounded-2xl ${darkMode ? 'bg-slate-800/50 border-slate-700' : 'bg-white border-gray-200'} border backdrop-blur-sm`}>
+                <div className="flex items-center justify-between mb-4">
+                  <h4 className={`font-semibold ${darkMode ? 'text-white' : 'text-gray-900'}`}>💾 Sauvegarde & Restauration</h4>
                 </div>
                 
-                {/* Liste des sauvegardes */}
-                {(() => {
-                  const autoBackups = JSON.parse(localStorage.getItem('budgetflow_autoBackups') || '[]');
-                  if (autoBackups.length === 0) return (
-                    <p className={`text-center py-4 text-sm ${darkMode ? 'text-slate-500' : 'text-gray-400'}`}>
-                      Aucune sauvegarde disponible
+                <div className="space-y-4">
+                  {/* Message d'information */}
+                  <div className={`p-4 rounded-xl ${darkMode ? 'bg-blue-500/20 border border-blue-500/30' : 'bg-blue-50 border border-blue-200'}`}>
+                    <p className={`text-sm ${darkMode ? 'text-blue-300' : 'text-blue-700'}`}>
+                      ℹ️ Les données sont automatiquement sauvegardées dans PostgreSQL. 
+                      Les sauvegardes manuelles/exports sont disponibles via l'API.
                     </p>
-                  );
-                  
-                  return (
-                    <div className={`p-3 rounded-xl ${darkMode ? 'bg-slate-700/30' : 'bg-gray-50'}`}>
-                      <p className={`text-sm font-medium mb-3 ${darkMode ? 'text-slate-300' : 'text-gray-700'}`}>
-                        🕐 Sauvegardes disponibles ({autoBackups.length}/5)
-                      </p>
-                      <div className="space-y-2 max-h-48 overflow-y-auto">
-                        {autoBackups.map((backup, index) => (
-                          <div key={index} className={`flex items-center justify-between p-3 rounded-lg ${darkMode ? 'bg-slate-700/50' : 'bg-gray-100'}`}>
-                            <div>
-                              <p className={`text-sm font-medium ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                                {new Date(backup.date).toLocaleDateString('fr-FR')} à {new Date(backup.date).toLocaleTimeString('fr-FR', {hour: '2-digit', minute: '2-digit'})}
-                              </p>
-                              <p className={`text-xs ${darkMode ? 'text-slate-400' : 'text-gray-500'}`}>
-                                {backup.type === 'auto' ? '🔄 Auto' : backup.type === 'manual' ? '💾 Manuelle' : '📤 Export'}
-                                {' • '}{Object.keys(backup.data || {}).length} utilisateur(s)
-                              </p>
-                            </div>
-                            <div className="flex gap-2">
-                              <button
-                                onClick={() => {
-                                  const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' });
-                                  const url = URL.createObjectURL(blob);
-                                  const a = document.createElement('a');
-                                  a.href = url;
-                                  a.download = `budgetflow_backup_${new Date(backup.date).toISOString().split('T')[0]}.json`;
-                                  a.click();
-                                  URL.revokeObjectURL(url);
-                                }}
-                                className={`p-2 rounded-lg ${darkMode ? 'bg-slate-600 text-slate-300 hover:bg-slate-500' : 'bg-gray-200 text-gray-600 hover:bg-gray-300'}`}
-                                title="Télécharger"
-                              >
-                                📥
-                              </button>
-                              <button
-                                onClick={() => {
-                                  showConfirm(
-                                    'Restaurer la sauvegarde',
-                                    '⚠️ Les données actuelles seront écrasées ! Voulez-vous continuer ?',
-                                    () => {
-                                      SecurityManager.saveSecure('users', backup.users);
-                                      Object.keys(backup.data).forEach(userId => {
-                                        const userData = backup.data[userId];
-                                        SecurityManager.saveSecure(`transactions_${userId}`, userData.transactions);
-                                        SecurityManager.saveSecure(`categories_${userId}`, userData.categories);
-                                        SecurityManager.saveSecure(`brands_${userId}`, userData.brands);
-                                        SecurityManager.saveSecure(`savings_${userId}`, userData.savings);
-                                      });
-                                      
-                                      alert('✅ Restauration réussie !');
-                                      window.location.reload();
-                                    }
-                                  );
-                                }}
-                                className={`p-2 rounded-lg ${darkMode ? 'bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500/30' : 'bg-emerald-100 text-emerald-600 hover:bg-emerald-200'}`}
-                                title="Restaurer"
-                              >
-                                ♻️
-                              </button>
-                              <button
-                                onClick={() => {
-                                  showConfirm(
-                                    'Supprimer la sauvegarde',
-                                    'Voulez-vous vraiment supprimer cette sauvegarde ?',
-                                    () => {
-                                      const backups = JSON.parse(localStorage.getItem('budgetflow_autoBackups') || '[]');
-                                      backups.splice(index, 1);
-                                      localStorage.setItem('budgetflow_autoBackups', JSON.stringify(backups));
-                                      window.location.reload();
-                                    }
-                                  );
-                                }}
-                                className={`p-2 rounded-lg ${darkMode ? 'bg-red-500/20 text-red-400 hover:bg-red-500/30' : 'bg-red-100 text-red-600 hover:bg-red-200'}`}
-                                title="Supprimer"
-                              >
-                                🗑️
-                              </button>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  );
-                })()}
+                  </div>
+
+                  {/* Boutons d'action */}
+                  <div className="grid grid-cols-2 gap-2">
+                    {/* Export JSON */}
+                    <button
+                      onClick={async () => {
+                        try {
+                          const data = await api.sync();
+                          const backup = {
+                            version: '2.0',
+                            date: new Date().toISOString(),
+                            type: 'export',
+                            user: { id: currentUser.id, email: currentUser.email, name: currentUser.name },
+                            data: data
+                          };
+                          
+                          const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' });
+                          const url = URL.createObjectURL(blob);
+                          const a = document.createElement('a');
+                          a.href = url;
+                          a.download = `budgetflow_backup_${new Date().toISOString().split('T')[0]}.json`;
+                          a.click();
+                          URL.revokeObjectURL(url);
+                          
+                          showAlert('Export réussi', 'Vos données ont été exportées avec succès.', 'success');
+                        } catch (error) {
+                          console.error('Export error:', error);
+                          showAlert('Erreur', 'Impossible d\'exporter les données.', 'error');
+                        }
+                      }}
+                      className={`flex flex-col items-center justify-center gap-1 p-3 rounded-xl ${darkMode ? 'bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500/30' : 'bg-emerald-100 text-emerald-600 hover:bg-emerald-200'} transition-all`}
+                    >
+                      <span className="text-xl">📥</span>
+                      <span className="text-xs font-medium">Exporter</span>
+                    </button>
+                    
+                    {/* Import JSON */}
+                    <label className={`flex flex-col items-center justify-center gap-1 p-3 rounded-xl ${darkMode ? 'bg-purple-500/20 text-purple-400 hover:bg-purple-500/30' : 'bg-purple-100 text-purple-600 hover:bg-purple-200'} transition-all cursor-pointer`}>
+                      <span className="text-xl">📤</span>
+                      <span className="text-xs font-medium">Importer</span>
+                      <input
+                        type="file"
+                        accept=".json"
+                        className="hidden"
+                        onChange={(e) => {
+                          const file = e.target.files[0];
+                          if (!file) return;
+                          
+                          const reader = new FileReader();
+                          reader.onload = (event) => {
+                            try {
+                              const backup = JSON.parse(event.target.result);
+                              
+                              if (!backup.version || !backup.data) {
+                                showAlert('Erreur', 'Fichier de sauvegarde invalide.', 'error');
+                                return;
+                              }
+                              
+                              showConfirm(
+                                'Restaurer la sauvegarde',
+                                `⚠️ Attention : Cette action est irréversible et écrasera vos données actuelles.\n\nSauvegarde du ${new Date(backup.date).toLocaleString('fr-FR')}\n\nVoulez-vous vraiment continuer ?`,
+                                async () => {
+                                  try {
+                                    // Note: Vous devrez implémenter l'endpoint /api/restore côté serveur
+                                    showAlert('Information', 'La restauration complète depuis un fichier nécessite un endpoint API dédié. Contactez l\'administrateur.', 'warning');
+                                    
+                                    // Pour l'instant, on peut seulement importer les transactions
+                                    // if (backup.data.transactions) {
+                                    //   for (const t of backup.data.transactions) {
+                                    //     await api.addTransaction(t);
+                                    //   }
+                                    // }
+                                  } catch (error) {
+                                    console.error('Import error:', error);
+                                    showAlert('Erreur', 'Impossible d\'importer les données.', 'error');
+                                  }
+                                }
+                              );
+                            } catch (err) {
+                              showAlert('Erreur', 'Erreur lors de la lecture du fichier.', 'error');
+                            }
+                          };
+                          reader.readAsText(file);
+                          e.target.value = '';
+                        }}
+                      />
+                    </label>
+                  </div>
+                </div>
               </div>
-            </div>
-            )}
+              )}
 
             {/* Gestion des administrateurs */}
             {hasPermission('manage_admins') && (
@@ -4397,7 +4383,8 @@ export default function BudgetApp() {
                   </div>
                   
                   {/* Autres admins */}
-                  {adminList.filter(a => a.email !== ADMIN_EMAIL).map(admin => (
+                  {[].map(admin => ( // Tableau vide car gestion admin pas encore implémentée côté serveur
+
                     <div key={admin.email} className={`p-4 rounded-xl ${darkMode ? 'bg-slate-700/50' : 'bg-gray-50'} group`}>
                       <div className="flex items-center justify-between">
                         <div className="flex items-center gap-3">
@@ -4444,7 +4431,9 @@ export default function BudgetApp() {
                               showConfirm(
                                 'Retirer les droits admin',
                                 `Voulez-vous vraiment retirer les droits admin de "${admin.email}" ?`,
-                                () => setAdminList(prev => prev.filter(a => a.email !== admin.email))
+                                () => {
+                                  showAlert('Information', 'La gestion des admins nécessite un endpoint API dédié.', 'info');
+                                }
                               );
                             }}
                             className="p-2 rounded-lg bg-rose-500/20 text-rose-400 hover:bg-rose-500/30"
@@ -4456,7 +4445,7 @@ export default function BudgetApp() {
                     </div>
                   ))}
                   
-                  {adminList.filter(a => a.email !== ADMIN_EMAIL).length === 0 && (
+                  {true && (
                     <p className={`text-center py-4 text-sm ${darkMode ? 'text-slate-500' : 'text-gray-400'}`}>
                       Aucun administrateur supplémentaire
                     </p>
@@ -4464,110 +4453,25 @@ export default function BudgetApp() {
                 </div>
               </div>
             )}
-
             {/* Gestion des utilisateurs */}
             {hasPermission('manage_users') && (
-            <div className={`p-6 rounded-2xl ${darkMode ? 'bg-slate-800/50 border-slate-700' : 'bg-white border-gray-200'} border backdrop-blur-sm`}>
-              <div className="flex items-center justify-between mb-4">
-                <h4 className={`font-semibold ${darkMode ? 'text-white' : 'text-gray-900'}`}>👥 Gestion des utilisateurs</h4>
+              <div className={`p-6 rounded-2xl ${darkMode ? 'bg-slate-800/50 border-slate-700' : 'bg-white border-gray-200'} border backdrop-blur-sm`}>
+                <div className="flex items-center justify-between mb-4">
+                  <h4 className={`font-semibold ${darkMode ? 'text-white' : 'text-gray-900'}`}>👥 Gestion des utilisateurs</h4>
+                </div>
+                <div className={`p-4 rounded-xl ${darkMode ? 'bg-blue-500/20' : 'bg-blue-50'} text-center`}>
+                  <p className={`text-sm ${darkMode ? 'text-blue-300' : 'text-blue-700'}`}>
+                    ℹ️ La gestion des utilisateurs se fait désormais via l'API PostgreSQL.
+                    <br />
+                    Utilisez les outils d'administration de base de données ou créez un endpoint API dédié.
+                  </p>
+                </div>
               </div>
-              <div className="space-y-3">
-                {(() => {
-                  const users = SecurityManager.loadSecure('users') || [];
-                  return users.map(user => (
-                    <div key={user.id} className={`p-4 rounded-xl ${darkMode ? 'bg-slate-700/50' : 'bg-gray-50'} flex items-center justify-between`}>
-                      <div className="flex items-center gap-3">
-                        <div className={`w-10 h-10 rounded-full flex items-center justify-center text-lg ${user.email === ADMIN_EMAIL ? 'bg-amber-500/20' : 'bg-slate-600'}`}>
-                          {user.email === ADMIN_EMAIL ? '👑' : '👤'}
-                        </div>
-                        <div>
-                          <p className={`font-medium ${darkMode ? 'text-white' : 'text-gray-900'}`}>{user.name}</p>
-                          <p className={`text-sm ${darkMode ? 'text-slate-400' : 'text-gray-500'}`}>{user.email}</p>
-                        </div>
-                      </div>
-                      <div className="flex gap-2">
-                        <button
-                          onClick={() => {
-                            const newEmail = prompt('Nouvel email :', user.email);
-                            if (!newEmail || newEmail === user.email) return;
-                            if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(newEmail)) {
-                              alert('Email invalide');
-                              return;
-                            }
-                            const users = SecurityManager.loadSecure('users') || [];
-                            if (users.find(u => u.email === newEmail.toLowerCase() && u.id !== user.id)) {
-                              alert('Cet email est déjà utilisé');
-                              return;
-                            }
-                            const idx = users.findIndex(u => u.id === user.id);
-                            if (idx !== -1) {
-                              users[idx].email = newEmail.toLowerCase();
-                              SecurityManager.saveSecure('users', users);
-                              alert('Email modifié !');
-                              window.location.reload();
-                            }
-                          }}
-                          className={`px-3 py-1.5 rounded-lg text-sm ${darkMode ? 'bg-blue-500/20 text-blue-400 hover:bg-blue-500/30' : 'bg-blue-100 text-blue-600 hover:bg-blue-200'} transition-all`}
-                        >
-                          ✏️ Email
-                        </button>
-                        <button
-                          onClick={() => {
-                            const newPassword = prompt('Nouveau mot de passe (min 8 car., 1 maj., 1 chiffre) :');
-                            if (!newPassword) return;
-                            if (newPassword.length < 8 || !/[A-Z]/.test(newPassword) || !/[0-9]/.test(newPassword)) {
-                              alert('Le mot de passe doit contenir au moins 8 caractères, une majuscule et un chiffre');
-                              return;
-                            }
-                            const users = SecurityManager.loadSecure('users') || [];
-                            const idx = users.findIndex(u => u.id === user.id);
-                            if (idx !== -1) {
-                              const newSalt = generateId();
-                              users[idx].password = SecurityManager.hashPassword(newPassword, newSalt);
-                              users[idx].salt = newSalt;
-                              SecurityManager.saveSecure('users', users);
-                              alert('Mot de passe modifié !');
-                            }
-                          }}
-                          className={`px-3 py-1.5 rounded-lg text-sm ${darkMode ? 'bg-purple-500/20 text-purple-400 hover:bg-purple-500/30' : 'bg-purple-100 text-purple-600 hover:bg-purple-200'} transition-all`}
-                        >
-                          🔑 MDP
-                        </button>
-                        {user.email !== ADMIN_EMAIL && (
-                          <button
-                            onClick={() => {
-                              showConfirm(
-                                'Supprimer l\'utilisateur',
-                                `Voulez-vous vraiment supprimer "${user.name}" ? Toutes ses données seront perdues.`,
-                                () => {
-                                  const users = SecurityManager.loadSecure('users') || [];
-                                  const filtered = users.filter(u => u.id !== user.id);
-                                  SecurityManager.saveSecure('users', filtered);
-                                  SecurityManager.removeSecure(`transactions_${user.id}`);
-                                  SecurityManager.removeSecure(`categories_${user.id}`);
-                                  SecurityManager.removeSecure(`brands_${user.id}`);
-                                  alert('Utilisateur supprimé');
-                                  window.location.reload();
-                                }
-                              );
-                            }}
-                            className={`px-3 py-1.5 rounded-lg text-sm ${darkMode ? 'bg-red-500/20 text-red-400 hover:bg-red-500/30' : 'bg-red-100 text-red-600 hover:bg-red-200'} transition-all`}
-                          >
-                            🗑️
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                  ));
-                })()}
-              </div>
-            </div>
             )}
-          </div>
-        )}
-      </main>
+          </main>
+        </div>
 
-      {/* Modal */}
+        {/* Modal */}
       <TransactionModal
         allBrands={allBrands}
         showModal={showModal}
@@ -4811,127 +4715,89 @@ export default function BudgetApp() {
         </div>
       )}
 
-      {/* Modal Gestion Admin */}
-      {showAdminModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm" onClick={() => { setShowAdminModal(false); setEditingAdmin(null); }}>
-          <div className={`w-full max-w-md ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-white border-gray-200'} border rounded-2xl shadow-2xl`} onClick={e => e.stopPropagation()}>
-            <div className={`p-4 border-b ${darkMode ? 'border-slate-700' : 'border-gray-200'}`}>
+      {/* Modal Admin */}
+      {showAdminModal && isAdmin && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm" onClick={() => setShowAdminModal(false)}>
+          <div className={`w-full max-w-4xl max-h-[90vh] overflow-y-auto ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-white border-gray-200'} border rounded-2xl shadow-2xl`} onClick={e => e.stopPropagation()}>
+            <div className={`p-4 border-b ${darkMode ? 'border-slate-700' : 'border-gray-200'} sticky top-0 ${darkMode ? 'bg-slate-800' : 'bg-white'} z-10`}>
               <div className="flex items-center justify-between">
-                <h3 className={`text-lg font-bold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                  {editingAdmin ? '✏️ Modifier les droits' : '👑 Ajouter un administrateur'}
-                </h3>
-                <button onClick={() => { setShowAdminModal(false); setEditingAdmin(null); }} className={`p-2 rounded-xl ${darkMode ? 'hover:bg-slate-700' : 'hover:bg-gray-200'}`}>✕</button>
+                <h3 className={`text-xl font-bold ${darkMode ? 'text-white' : 'text-gray-900'}`}>👑 Panneau Administrateur</h3>
+                <button onClick={() => setShowAdminModal(false)} className={`p-2 rounded-xl ${darkMode ? 'hover:bg-slate-700' : 'hover:bg-gray-200'}`}>✕</button>
               </div>
             </div>
             
-            <form onSubmit={(e) => {
-              e.preventDefault();
-              const formData = new FormData(e.target);
-              const email = formData.get('email')?.trim().toLowerCase();
-              
-              if (!email) return;
-              
-              if (email === ADMIN_EMAIL) {
-                alert('Impossible de modifier le super administrateur');
-                return;
-              }
-              
-              const permissions = [];
-              ADMIN_PERMISSIONS.forEach(p => {
-                if (formData.get(`perm_${p.id}`)) {
-                  permissions.push(p.id);
-                }
-              });
-              
-              if (formData.get('perm_all')) {
-                permissions.length = 0;
-                permissions.push('all');
-              }
-              
-              if (permissions.length === 0) {
-                alert('Veuillez sélectionner au moins une permission');
-                return;
-              }
-              
-              const adminData = {
-                email,
-                permissions,
-                addedAt: editingAdmin?.addedAt || new Date().toISOString(),
-                updatedAt: new Date().toISOString()
-              };
-              
-              if (editingAdmin) {
-                setAdminList(prev => prev.map(a => a.email === editingAdmin.email ? adminData : a));
-              } else {
-                if (adminList.some(a => a.email === email)) {
-                  alert('Cet utilisateur est déjà administrateur');
-                  return;
-                }
-                setAdminList(prev => [...prev, adminData]);
-              }
-              
-              setShowAdminModal(false);
-              setEditingAdmin(null);
-            }} className="p-4 space-y-4">
-              <div>
-                <label className={`block text-sm font-medium mb-1 ${darkMode ? 'text-slate-300' : 'text-gray-700'}`}>Email de l'utilisateur</label>
-                <input
-                  type="email"
-                  name="email"
-                  required
-                  defaultValue={editingAdmin?.email || ''}
-                  readOnly={!!editingAdmin}
-                  placeholder="exemple@email.com"
-                  className={`w-full px-4 py-3 rounded-xl border ${editingAdmin ? 'opacity-50 cursor-not-allowed' : ''} ${darkMode ? 'bg-slate-700 border-slate-600 text-white placeholder-slate-500' : 'bg-gray-50 border-gray-200'}`}
-                />
-              </div>
-              
-              <div>
-                <label className={`block text-sm font-medium mb-2 ${darkMode ? 'text-slate-300' : 'text-gray-700'}`}>Permissions</label>
-                
-                <label className={`flex items-center gap-3 p-3 rounded-xl mb-2 cursor-pointer ${darkMode ? 'bg-purple-500/10 border border-purple-500/30 hover:bg-purple-500/20' : 'bg-purple-50 border border-purple-200 hover:bg-purple-100'}`}>
-                  <input
-                    type="checkbox"
-                    name="perm_all"
-                    defaultChecked={editingAdmin?.permissions?.includes('all')}
-                    className="w-5 h-5 rounded text-purple-500"
-                    onChange={(e) => {
-                      const checkboxes = e.target.closest('form').querySelectorAll('input[name^="perm_"]:not([name="perm_all"])');
-                      checkboxes.forEach(cb => {
-                        cb.disabled = e.target.checked;
-                        if (e.target.checked) cb.checked = false;
-                      });
-                    }}
-                  />
-                  <div>
-                    <p className={`font-medium ${darkMode ? 'text-purple-400' : 'text-purple-700'}`}>👑 Tous les droits</p>
-                    <p className={`text-xs ${darkMode ? 'text-slate-400' : 'text-gray-500'}`}>Accès complet</p>
-                  </div>
-                </label>
-                
-                <div className="space-y-2 max-h-48 overflow-y-auto">
-                  {ADMIN_PERMISSIONS.map(perm => (
-                    <label key={perm.id} className={`flex items-center gap-3 p-3 rounded-xl cursor-pointer ${darkMode ? 'bg-slate-700/50 hover:bg-slate-700' : 'bg-gray-50 hover:bg-gray-100'}`}>
-                      <input
-                        type="checkbox"
-                        name={`perm_${perm.id}`}
-                        defaultChecked={editingAdmin?.permissions?.includes(perm.id)}
-                        disabled={editingAdmin?.permissions?.includes('all')}
-                        className="w-5 h-5 rounded text-emerald-500"
-                      />
-                      <div>
-                        <p className={`font-medium ${darkMode ? 'text-white' : 'text-gray-900'}`}>{perm.icon} {perm.name}</p>
-                        <p className={`text-xs ${darkMode ? 'text-slate-400' : 'text-gray-500'}`}>{perm.description}</p>
-                      </div>
-                    </label>
-                  ))}
+            <div className="p-4">
+              {/* Stats */}
+              <div className="grid grid-cols-3 gap-4 mb-6">
+                <div className={`p-4 rounded-xl ${darkMode ? 'bg-slate-700/50' : 'bg-gray-50'}`}>
+                  <p className={`text-2xl font-bold ${darkMode ? 'text-white' : 'text-gray-900'}`}>{adminUsers.length}</p>
+                  <p className={`text-sm ${darkMode ? 'text-slate-400' : 'text-gray-500'}`}>Utilisateurs</p>
+                </div>
+                <div className={`p-4 rounded-xl ${darkMode ? 'bg-slate-700/50' : 'bg-gray-50'}`}>
+                  <p className={`text-2xl font-bold ${darkMode ? 'text-white' : 'text-gray-900'}`}>{adminUsers.filter(u => u.is_admin).length}</p>
+                  <p className={`text-sm ${darkMode ? 'text-slate-400' : 'text-gray-500'}`}>Admins</p>
+                </div>
+                <div className={`p-4 rounded-xl ${darkMode ? 'bg-slate-700/50' : 'bg-gray-50'}`}>
+                  <p className={`text-2xl font-bold text-green-500`}>{isConnected ? '🟢' : '🔴'}</p>
+                  <p className={`text-sm ${darkMode ? 'text-slate-400' : 'text-gray-500'}`}>WebSocket</p>
                 </div>
               </div>
+
+              {/* Liste utilisateurs */}
+              <h4 className={`font-semibold mb-3 ${darkMode ? 'text-white' : 'text-gray-900'}`}>👥 Gestion des utilisateurs</h4>
               
-              <button type="submit" className="w-full py-3 rounded-xl bg-gradient-to-r from-purple-500 to-pink-500 text-white font-semibold">
-                {editingAdmin ? '✓ Enregistrer' : '+ Ajouter'}
-              </button>
-            </form>
+              {loadingAdmin ? (
+                <div className="text-center py-8">
+                  <div className="animate-spin w-8 h-8 border-4 border-emerald-500 border-t-transparent rounded-full mx-auto"></div>
+                  <p className={`mt-2 ${darkMode ? 'text-slate-400' : 'text-gray-500'}`}>Chargement...</p>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {adminUsers.map(user => (
+                    <div key={user.id} className={`p-4 rounded-xl ${darkMode ? 'bg-slate-700/50' : 'bg-gray-50'} flex items-center justify-between`}>
+                      <div className="flex-1">
+                        <div className="flex items-center gap-2">
+                          <p className={`font-medium ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+                            {user.name}
+                            {user.is_admin && <span className="ml-2 text-xs bg-amber-500 text-white px-2 py-0.5 rounded-full">Admin</span>}
+                          </p>
+                        </div>
+                        <p className={`text-sm ${darkMode ? 'text-slate-400' : 'text-gray-500'}`}>{user.email}</p>
+                        <p className={`text-xs ${darkMode ? 'text-slate-500' : 'text-gray-400'}`}>
+                          Inscrit le {new Date(user.created_at).toLocaleDateString('fr-FR')}
+                          {user.last_login && ` • Dernière connexion: ${new Date(user.last_login).toLocaleDateString('fr-FR')}`}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {user.id !== currentUser.id && (
+                          <>
+                            <button
+                              onClick={() => handleToggleAdmin(user.id, user.is_admin)}
+                              className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-all ${
+                                user.is_admin 
+                                  ? 'bg-amber-500/20 text-amber-500 hover:bg-amber-500/30' 
+                                  : `${darkMode ? 'bg-slate-600 text-slate-300 hover:bg-slate-500' : 'bg-gray-200 text-gray-600 hover:bg-gray-300'}`
+                              }`}
+                            >
+                              {user.is_admin ? '👑 Retirer admin' : '➕ Rendre admin'}
+                            </button>
+                            <button
+                              onClick={() => handleDeleteUser(user.id, user.name)}
+                              className="px-3 py-1.5 rounded-lg text-sm font-medium bg-red-500/20 text-red-500 hover:bg-red-500/30 transition-all"
+                            >
+                              🗑️
+                            </button>
+                          </>
+                        )}
+                        {user.id === currentUser.id && (
+                          <span className={`text-sm ${darkMode ? 'text-slate-500' : 'text-gray-400'}`}>C'est vous</span>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         </div>
       )}
@@ -5297,7 +5163,7 @@ export default function BudgetApp() {
               </div>
             </div>
             
-            <form onSubmit={(e) => {
+            <form onSubmit={async (e) => {
               e.preventDefault();
               const formData = new FormData(e.target);
               
@@ -5320,8 +5186,7 @@ export default function BudgetApp() {
                 }
               });
               
-              const debt = {
-                id: editingDebt?.id || generateId(),
+              const debtData = {
                 name: formData.get('name'),
                 icon: formData.get('icon') || '💳',
                 creditor: formData.get('creditor'),
@@ -5330,18 +5195,26 @@ export default function BudgetApp() {
                 startDate: formData.get('startDate'),
                 duration: parseInt(formData.get('duration')) || 12,
                 schedule: schedule,
-                notes: formData.get('notes'),
-                createdAt: editingDebt?.createdAt || new Date().toISOString()
+                notes: formData.get('notes')
               };
               
-              if (editingDebt) {
-                setDebts(prev => prev.map(d => d.id === editingDebt.id ? debt : d));
-              } else {
-                setDebts(prev => [...prev, debt]);
+              try {
+                if (editingDebt) {
+                  const updated = await api.updateDebt(editingDebt.id, debtData);
+                  if (updated) {
+                    setDebts(prev => prev.map(d => d.id === editingDebt.id ? updated : d));
+                  }
+                } else {
+                  const newDebt = await api.addDebt(debtData);
+                  if (newDebt) {
+                    setDebts(prev => [...prev, newDebt]);
+                  }
+                }
+                setShowDebtModal(false);
+                setEditingDebt(null);
+              } catch (error) {
+                console.error('Erreur sauvegarde dette:', error);
               }
-              
-              setShowDebtModal(false);
-              setEditingDebt(null);
             }} className="p-4 overflow-y-auto max-h-[75vh]">
               <div className="space-y-4">
                 {/* Infos de base */}
@@ -5938,27 +5811,34 @@ export default function BudgetApp() {
               </div>
             </div>
             
-            <form onSubmit={(e) => {
+            <form onSubmit={async (e) => {
               e.preventDefault();
               const formData = new FormData(e.target);
-              const goal = {
-                id: editingGoal?.id || generateId(),
+              const goalData = {
                 name: formData.get('name'),
                 icon: formData.get('icon') || '🎯',
                 target: parseFloat(formData.get('target')),
                 current: parseFloat(formData.get('current')) || editingGoal?.current || 0,
-                targetDate: formData.get('targetDate') || null,
-                createdAt: editingGoal?.createdAt || new Date().toISOString()
+                deadline: formData.get('targetDate') || null
               };
               
-              if (editingGoal) {
-                setSavingsGoals(prev => prev.map(g => g.id === editingGoal.id ? goal : g));
-              } else {
-                setSavingsGoals(prev => [...prev, goal]);
+              try {
+                if (editingGoal) {
+                  const updated = await api.updateSavingsGoal(editingGoal.id, goalData);
+                  if (updated) {
+                    setSavingsGoals(prev => prev.map(g => g.id === editingGoal.id ? updated : g));
+                  }
+                } else {
+                  const newGoal = await api.addSavingsGoal(goalData);
+                  if (newGoal) {
+                    setSavingsGoals(prev => [...prev, newGoal]);
+                  }
+                }
+                setShowGoalModal(false);
+                setEditingGoal(null);
+              } catch (error) {
+                console.error('Erreur sauvegarde objectif:', error);
               }
-              
-              setShowGoalModal(false);
-              setEditingGoal(null);
             }} className="p-4 space-y-4">
               {/* Icône et Nom */}
               <div className="flex gap-3">
@@ -6059,11 +5939,10 @@ export default function BudgetApp() {
             <div className="p-4 overflow-y-auto max-h-[65vh]">
               {/* Formulaire nouveau/édition template */}
               {(showNewTemplateForm || editingTemplate) ? (
-                <form onSubmit={(e) => {
+                <form onSubmit={async (e) => {
                   e.preventDefault();
                   const formData = new FormData(e.target);
-                  const template = {
-                    id: editingTemplate?.id || generateId(),
+                  const templateData = {
                     name: formData.get('name'),
                     amount: parseFloat(formData.get('amount')),
                     type: formData.get('type'),
@@ -6073,14 +5952,23 @@ export default function BudgetApp() {
                     isFixedExpense: formData.get('isFixedExpense') === 'on'
                   };
                   
-                  if (editingTemplate) {
-                    setQuickTemplates(prev => prev.map(t => t.id === editingTemplate.id ? template : t));
-                  } else {
-                    setQuickTemplates(prev => [...prev, template]);
+                  try {
+                    if (editingTemplate) {
+                      const updated = await api.updateTemplate(editingTemplate.id, templateData);
+                      if (updated) {
+                        setQuickTemplates(prev => prev.map(t => t.id === editingTemplate.id ? updated : t));
+                      }
+                    } else {
+                      const newTemplate = await api.addTemplate(templateData);
+                      if (newTemplate) {
+                        setQuickTemplates(prev => [...prev, newTemplate]);
+                      }
+                    }
+                    setShowNewTemplateForm(false);
+                    setEditingTemplate(null);
+                  } catch (error) {
+                    console.error('Erreur sauvegarde template:', error);
                   }
-                  
-                  setShowNewTemplateForm(false);
-                  setEditingTemplate(null);
                 }} className="space-y-4">
                   <div className="flex items-center justify-between mb-4">
                     <h4 className={`font-semibold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
@@ -6276,7 +6164,14 @@ export default function BudgetApp() {
                                     showConfirm(
                                       'Supprimer le template',
                                       `Voulez-vous supprimer "${template.name}" ?`,
-                                      () => setQuickTemplates(prev => prev.filter(t => t.id !== template.id))
+                                      async () => {
+                                        try {
+                                          await api.deleteTemplate(template.id);
+                                          setQuickTemplates(prev => prev.filter(t => t.id !== template.id));
+                                        } catch (error) {
+                                          console.error('Erreur suppression template:', error);
+                                        }
+                                      }
                                     );
                                   }}
                                   className="p-2 rounded-lg bg-rose-500/20 text-rose-400 hover:bg-rose-500/30 opacity-0 group-hover:opacity-100 transition-all"
@@ -6766,26 +6661,34 @@ export default function BudgetApp() {
             </h3>
             <div className="grid grid-cols-10 gap-1 max-h-64 overflow-y-auto p-2">
               {EMOJI_PICKER.map((emoji, i) => (
-                <button key={i} onClick={() => {
-                  if (showEmojiPicker.type === 'category') {
-                    const newCat = {
-                      id: generateId(),
-                      name: showEmojiPicker.name,
-                      icon: emoji,
-                      color: '#' + Math.floor(Math.random()*16777215).toString(16).padStart(6, '0'),
-                      type: showEmojiPicker.catType
-                    };
-                    setCustomCategories(prev => [...prev, newCat]);
-                  } else {
-                    const newBrand = {
-                      id: generateId(),
-                      name: showEmojiPicker.name,
-                      logo: emoji,
-                      color: '#' + Math.floor(Math.random()*16777215).toString(16).padStart(6, '0')
-                    };
-                    setCustomBrands(prev => [...prev, newBrand]);
+                <button key={i} onClick={async () => {
+                  try {
+                    if (showEmojiPicker.type === 'category') {
+                      const catData = {
+                        name: showEmojiPicker.name,
+                        icon: emoji,
+                        color: '#' + Math.floor(Math.random()*16777215).toString(16).padStart(6, '0'),
+                        type: showEmojiPicker.catType
+                      };
+                      const newCat = await api.addCustomCategory(catData);
+                      if (newCat) {
+                        setCustomCategories(prev => [...prev, newCat]);
+                      }
+                    } else {
+                      const brandData = {
+                        name: showEmojiPicker.name,
+                        logo: emoji,
+                        color: '#' + Math.floor(Math.random()*16777215).toString(16).padStart(6, '0')
+                      };
+                      const newBrand = await api.addCustomBrand(brandData);
+                      if (newBrand) {
+                        setCustomBrands(prev => [...prev, newBrand]);
+                      }
+                    }
+                    setShowEmojiPicker(null);
+                  } catch (error) {
+                    console.error('Erreur ajout:', error);
                   }
-                  setShowEmojiPicker(null);
                 }} className={`p-2 text-2xl rounded-lg ${darkMode ? 'hover:bg-slate-700' : 'hover:bg-gray-100'} transition-all hover:scale-110`}>
                   {emoji}
                 </button>
