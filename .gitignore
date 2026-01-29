@@ -41,7 +41,3 @@ temp/
 *.sql
 *.dump
 
-# old app
-
-src/BudgetApp.jsx.backlast
-BudgetApp.jsx.bak
