@@ -54,29 +54,27 @@ Application web et mobile (PWA) de gestion de budget personnel avec synchronisat
 ## 🚀 Installation Automatique
 
 ### 1. Cloner le repository
-
 ```bash
-git clone https://github.com/Chocobon27/budgetflow.git
+git clone https://github.com/VOTRE_USERNAME/budgetflow.git
 cd budgetflow
 ```
 
-### 2. lancer l'installation 
-
+### 2. Lancer l'installation
 ```bash
 sudo chmod +x install.sh
 sudo ./install.sh
 ```
+
 Le script vous demandera :
-- Nom de domaine (ex: budget.example.com)
-- Email pour Let’s Encrypt
-- Nom d’utilisateur PostgreSQL
+- Nom de domaine (ex: `budget.example.com`)
+- Email pour Let's Encrypt
+- Nom d'utilisateur PostgreSQL
 - Mot de passe PostgreSQL
 - Nom de la base de données
 
 ### 3. Créer le premier administrateur
 
-Après avoir créé un compte via l’interface, exécutez :
-
+Après avoir créé un compte via l'interface, exécutez :
 ```bash
 sudo -u postgres psql -d budgetflow -c "UPDATE users SET is_admin = true, admin_permissions = '[\"all\"]' WHERE email = 'votre@email.com';"
 ```
@@ -84,7 +82,6 @@ sudo -u postgres psql -d budgetflow -c "UPDATE users SET is_admin = true, admin_
 ## 🔧 Installation Manuelle
 
 ### 1. Dépendances système
-
 ```bash
 sudo apt update && sudo apt upgrade -y
 sudo apt install -y curl git nginx postgresql postgresql-contrib certbot python3-certbot-nginx ufw
@@ -95,7 +92,6 @@ sudo apt install -y nodejs
 ```
 
 ### 2. Base de données PostgreSQL
-
 ```bash
 sudo -u postgres psql
 ```
@@ -106,8 +102,7 @@ GRANT ALL PRIVILEGES ON DATABASE budgetflow TO budgetflow;
 \q
 ```
 
-### 3. Configuration de l’application
-
+### 3. Configuration de l'application
 ```bash
 cd /var/www/budgetflow
 
@@ -116,9 +111,7 @@ cp api/.env.example api/.env
 nano api/.env
 ```
 
-
-### Modifier les valeurs :
-
+Modifier les valeurs :
 ```env
 PORT=3001
 DATABASE_URL=postgresql://budgetflow:votre_mot_de_passe@localhost:5432/budgetflow
@@ -128,7 +121,6 @@ CORS_ORIGIN=https://votre-domaine.com
 ```
 
 ### 4. Installation des dépendances
-
 ```bash
 # Frontend
 cd /var/www/budgetflow
@@ -142,8 +134,7 @@ npm install
 
 ### 5. Configuration Nginx
 
-### Créer `/etc/nginx/sites-available/budgetflow` (voir install.sh pour le contenu complet)
-
+Créer `/etc/nginx/sites-available/budgetflow` (voir `install.sh` pour le contenu complet)
 ```bash
 sudo ln -s /etc/nginx/sites-available/budgetflow /etc/nginx/sites-enabled/
 sudo rm /etc/nginx/sites-enabled/default
@@ -151,16 +142,14 @@ sudo nginx -t
 sudo systemctl reload nginx
 ```
 
-### 6. SSL avec Let’s Encrypt
-
+### 6. SSL avec Let's Encrypt
 ```bash
 sudo certbot --nginx -d votre-domaine.com
 ```
 
 ### 7. Service systemd
 
-### Créer `/etc/systemd/system/budgetflow.service` :
-
+Créer `/etc/systemd/system/budgetflow.service` :
 ```ini
 [Unit]
 Description=BudgetFlow API Server
@@ -185,7 +174,6 @@ sudo systemctl start budgetflow
 ```
 
 ### 8. Firewall
-
 ```bash
 sudo ufw default deny incoming
 sudo ufw default allow outgoing
@@ -196,28 +184,35 @@ sudo ufw enable
 ```
 
 ## 📝 Mise à jour
-
 ```bash
 cd /var/www/budgetflow
 ./update.sh
 ```
 
+Ou manuellement :
+```bash
+git pull origin main
+npm install
+cd api && npm install && cd ..
+npm run build
+sudo systemctl restart budgetflow
+```
+
 ## 🔒 Sécurité
-### L’application inclut :
 
--	✅ Rate limiting (protection brute force)
--	✅ Validation des entrées (express-validator)
--	✅ Protection XSS
--	✅ Helmet (headers sécurisés)
--	✅ CORS restrictif
--	✅ JWT avec expiration
--	✅ Hashing bcrypt (12 rounds)
--	✅ HTTPS obligatoire
--	✅ Firewall UFW
+L'application inclut :
 
+- ✅ Rate limiting (protection brute force)
+- ✅ Validation des entrées (express-validator)
+- ✅ Protection XSS
+- ✅ Helmet (headers sécurisés)
+- ✅ CORS restrictif
+- ✅ JWT avec expiration
+- ✅ Hashing bcrypt (12 rounds)
+- ✅ HTTPS obligatoire
+- ✅ Firewall UFW
 
 ## 📊 Commandes Utiles
-
 ```bash
 # Logs en temps réel
 sudo journalctl -u budgetflow -f
@@ -239,8 +234,7 @@ pg_dump -U budgetflow -h localhost budgetflow > backup.sql
 ```
 
 ## 📁 Structure du Projet
-
-```code
+```
 budgetflow/
 ├── api/
 │   ├── server.js          # API Express + WebSocket
@@ -268,8 +262,7 @@ budgetflow/
 
 ## 🐛 Dépannage
 
-### L’API ne démarre pas
-
+### L'API ne démarre pas
 ```bash
 # Vérifier les logs
 sudo journalctl -u budgetflow -n 50
@@ -282,7 +275,6 @@ cat /var/www/budgetflow/api/.env
 ```
 
 ### Erreur 502 Bad Gateway
-
 ```bash
 # L'API est-elle lancée ?
 sudo systemctl status budgetflow
@@ -293,11 +285,22 @@ sudo ss -tlnp | grep 3001
 
 ### WebSocket ne se connecte pas
 
-Vérifier la configuration Nginx pour /socket.io/
+Vérifier la configuration Nginx pour `/socket.io/`
 
 ### Certificat SSL expiré
-
 ```bash
 sudo certbot renew
 sudo systemctl reload nginx
 ```
+
+## 📄 License
+
+MIT License - Voir [LICENSE](LICENSE)
+
+## 👤 Auteur
+
+Samuel Buteau
+
+---
+
+⭐ Si ce projet vous est utile, n'hésitez pas à lui donner une étoile sur GitHub !
