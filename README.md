@@ -67,11 +67,11 @@ sudo chmod +x install.sh
 sudo ./install.sh
 ```
 Le script vous demandera :
-	-	Nom de domaine (ex: budget.example.com)
-	-	Email pour Let’s Encrypt
-	-	Nom d’utilisateur PostgreSQL
-	-	Mot de passe PostgreSQL
-	-	Nom de la base de données
+-Nom de domaine (ex: budget.example.com)
+-Email pour Let’s Encrypt
+-Nom d’utilisateur PostgreSQL
+-Mot de passe PostgreSQL
+-Nom de la base de données
 
 ### 3. Créer le premier administrateur
 
