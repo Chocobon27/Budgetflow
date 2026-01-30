@@ -300,7 +300,7 @@ MIT License - Voir [LICENSE](LICENSE)
 
 ## 👤 Auteur
 
-Samuel Buteau
+Chocobon27
 
 ---
 
