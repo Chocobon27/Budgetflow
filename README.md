@@ -56,8 +56,8 @@ Application web et mobile (PWA) de gestion de budget personnel avec synchronisat
 ### 1. Cloner le repository
 
 ```bash
-cd budgetflow
 git clone https://github.com/Chocobon27/budgetflow.git
+cd budgetflow
 ```
 
 ### 2. lancer l'installation 
