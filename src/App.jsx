@@ -205,9 +205,9 @@ function App() {
     }
   };
 
-  const handleLogout = () => {
-    api.logout();
-    window.location.reload();
+  const handleLogout = async () => {
+  await api.logout();
+  window.location.href = '/';
   };
 
   // === TRANSACTION HANDLERS ===

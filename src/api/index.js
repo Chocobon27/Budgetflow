@@ -47,7 +47,7 @@ const api = {
     return data;
   },
   
-  async register(email, password, name, secretQuestion, secretAnswer) {
+  async register(name, email, password, secretQuestion, secretAnswer) {
     const response = await fetch(`${API_URL}/auth/register`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -60,7 +60,17 @@ const api = {
   },
   
   async verify() { return this.request('/auth/verify'); },
-  async logout() { await this.request('/auth/logout', { method: 'POST' }); this.removeToken(); },
+  async logout() {
+  try {
+    await this.request('/auth/logout', { method: 'POST' });
+  } catch (e) {
+    console.log('Logout request failed, clearing token anyway');
+  }
+  this.removeToken();
+  localStorage.removeItem('user');
+  localStorage.removeItem('token');
+  localStorage.removeItem('budgetflow_token');
+},
   
   async forgotPassword(email) {
     const response = await fetch(`${API_URL}/auth/forgot-password`, {
