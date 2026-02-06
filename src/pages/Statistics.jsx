@@ -1,6 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import { useApp } from '../context/AppContext';
-import { formatCurrency } from '../utils/helpers';
+import { formatCurrency, formatDate } from '../utils/helpers';
 import { MONTHS_FR } from '../constants';
 
 const Statistics = () => {
@@ -15,7 +15,17 @@ const Statistics = () => {
   } = useApp();
 
   const [analysisTab, setAnalysisTab] = useState('overview');
-  const [periodFilter, setPeriodFilter] = useState(1);
+  const [periodFilter, setPeriodFilter] = useState(() => {
+    const saved = localStorage.getItem('budgetflow_periodFilter');
+    return saved ? parseInt(saved) : 1;
+  });
+  const [showTransactionDetail, setShowTransactionDetail] = useState(false);
+  const [detailFilter, setDetailFilter] = useState({ type: null, value: null, label: '' });
+
+  // Sauvegarder le filtre de période
+  React.useEffect(() => {
+    localStorage.setItem('budgetflow_periodFilter', periodFilter.toString());
+  }, [periodFilter]);
 
   const getCategoryInfo = (categoryId) => {
     return allCategories.find(c => c.id === categoryId) || {
@@ -24,6 +34,52 @@ const Statistics = () => {
       icon: '📌',
       color: '#6B7280'
     };
+  };
+
+  // Obtenir les transactions filtrées pour le modal de détail
+  const getFilteredTransactions = () => {
+    if (!detailFilter.type) return [];
+    let filtered = [...transactions];
+    const now = new Date();
+
+    switch (detailFilter.type) {
+      case 'month': {
+        const [year, month] = detailFilter.value.split('-').map(Number);
+        filtered = filtered.filter(t => {
+          const d = new Date(t.date);
+          return d.getMonth() === month && d.getFullYear() === year;
+        });
+        break;
+      }
+      case 'category': {
+        const startDate = new Date(now.getFullYear(), now.getMonth() - periodFilter + 1, 1);
+        filtered = filtered.filter(t =>
+          t.category === detailFilter.value &&
+          new Date(t.date) >= startDate
+        );
+        break;
+      }
+      case 'period': {
+        const startDate = new Date(now.getFullYear(), now.getMonth() - periodFilter + 1, 1);
+        filtered = filtered.filter(t => new Date(t.date) >= startDate);
+        if (detailFilter.value === 'income') {
+          filtered = filtered.filter(t => t.type === 'income');
+        } else if (detailFilter.value === 'expense') {
+          filtered = filtered.filter(t => t.type === 'expense');
+        }
+        break;
+      }
+      default:
+        break;
+    }
+
+    return filtered.sort((a, b) => new Date(b.date) - new Date(a.date));
+  };
+
+  // Ouvrir le modal de détail
+  const openDetail = (type, value, label) => {
+    setDetailFilter({ type, value, label });
+    setShowTransactionDetail(true);
   };
 
   // Calcul des stats par période
@@ -223,6 +279,7 @@ const Statistics = () => {
   const periodLabel = goalPeriod === 3 ? '3 mois' : goalPeriod === 6 ? '6 mois' : '1 an';
 
   return (
+  <>
     <div className="space-y-6">
       {/* Onglets */}
       <div className="flex gap-2 overflow-x-auto pb-2">
@@ -268,13 +325,21 @@ const Statistics = () => {
 
           {/* Cartes statistiques */}
           <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
-            <div className={`p-6 rounded-2xl ${darkMode ? 'bg-slate-800/50 border-slate-700' : 'bg-white border-gray-200'} border backdrop-blur-sm`}>
+            <div
+              onClick={() => openDetail('period', 'income', 'Revenus')}
+              className={`p-6 rounded-2xl ${darkMode ? 'bg-slate-800/50 border-slate-700 hover:bg-slate-800' : 'bg-white border-gray-200 hover:bg-gray-50'} border backdrop-blur-sm cursor-pointer transition-all`}
+            >
               <p className={`text-sm ${darkMode ? 'text-slate-400' : 'text-gray-500'} mb-2`}>Total revenus</p>
               <p className="text-3xl font-bold text-emerald-400">{formatCurrency(getPeriodStats.income)}</p>
+              <p className={`text-xs mt-1 ${darkMode ? 'text-slate-500' : 'text-gray-400'}`}>Cliquer pour détails</p>
             </div>
-            <div className={`p-6 rounded-2xl ${darkMode ? 'bg-slate-800/50 border-slate-700' : 'bg-white border-gray-200'} border backdrop-blur-sm`}>
+            <div
+              onClick={() => openDetail('period', 'expense', 'Dépenses')}
+              className={`p-6 rounded-2xl ${darkMode ? 'bg-slate-800/50 border-slate-700 hover:bg-slate-800' : 'bg-white border-gray-200 hover:bg-gray-50'} border backdrop-blur-sm cursor-pointer transition-all`}
+            >
               <p className={`text-sm ${darkMode ? 'text-slate-400' : 'text-gray-500'} mb-2`}>Total dépenses</p>
               <p className="text-3xl font-bold text-rose-400">{formatCurrency(getPeriodStats.expenses)}</p>
+              <p className={`text-xs mt-1 ${darkMode ? 'text-slate-500' : 'text-gray-400'}`}>Cliquer pour détails</p>
             </div>
             <div className={`p-6 rounded-2xl ${darkMode ? 'bg-slate-800/50 border-slate-700' : 'bg-white border-gray-200'} border backdrop-blur-sm`}>
               <p className={`text-sm ${darkMode ? 'text-slate-400' : 'text-gray-500'} mb-2`}>Solde restant</p>
@@ -368,7 +433,7 @@ const Statistics = () => {
                     const category = getCategoryInfo(categoryId);
                     const percentage = (data.expenses / getPeriodStats.expenses) * 100;
                     return (
-                      <div key={categoryId}>
+                      <div key={categoryId} onClick={() => openDetail('category', categoryId, category.name)} className="cursor-pointer hover:opacity-80 transition-all">
                         <div className="flex items-center justify-between mb-2">
                           <div className="flex items-center gap-2">
                             <span className="text-xl">{category.icon}</span>
@@ -404,7 +469,9 @@ const Statistics = () => {
                 const expenseHeight = (month.expenses / maxValue) * 100;
 
                 return (
-                  <div key={i} className="flex-1 flex flex-col items-center gap-1 group relative">
+                  <div key={i} className="flex-1 flex flex-col items-center gap-1 group relative cursor-pointer"
+                    onClick={() => openDetail('month', `${month.date.getFullYear()}-${month.date.getMonth()}`, month.fullLabel)}
+                  >
                     <div className="w-full flex gap-0.5 items-end h-48">
                       <div
                         className="flex-1 bg-emerald-500 rounded-t-sm transition-all hover:bg-emerald-400"
@@ -663,6 +730,65 @@ const Statistics = () => {
         </div>
       )}
     </div>
+
+    {/* Modal Détail des transactions */}
+    {showTransactionDetail && (
+      <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm" onClick={() => setShowTransactionDetail(false)}>
+        <div className={`w-full max-w-2xl max-h-[80vh] ${darkMode ? 'bg-slate-800' : 'bg-white'} rounded-2xl shadow-2xl overflow-hidden`} onClick={e => e.stopPropagation()}>
+          <div className={`p-4 border-b ${darkMode ? 'border-slate-700' : 'border-gray-200'}`}>
+            <div className="flex items-center justify-between">
+              <h3 className={`text-lg font-bold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+                📋 {detailFilter.label}
+              </h3>
+              <button onClick={() => setShowTransactionDetail(false)} className={`p-2 rounded-lg ${darkMode ? 'hover:bg-slate-700' : 'hover:bg-gray-100'}`}>✕</button>
+            </div>
+            <p className={`text-sm mt-1 ${darkMode ? 'text-slate-400' : 'text-gray-500'}`}>
+              {getFilteredTransactions().length} transaction(s)
+            </p>
+          </div>
+          <div className="overflow-y-auto max-h-[60vh] p-4">
+            {getFilteredTransactions().length === 0 ? (
+              <div className={`text-center py-8 ${darkMode ? 'text-slate-500' : 'text-gray-400'}`}>
+                <span className="text-4xl block mb-2">📭</span>
+                <p>Aucune transaction</p>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {getFilteredTransactions().map(t => {
+                  const cat = getCategoryInfo(t.category);
+                  return (
+                    <div key={t.id} className={`flex items-center justify-between p-3 rounded-xl ${darkMode ? 'bg-slate-700/50' : 'bg-gray-50'}`}>
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-lg flex items-center justify-center text-lg" style={{ backgroundColor: `${cat.color}20` }}>
+                          {cat.icon}
+                        </div>
+                        <div>
+                          <p className={`font-medium text-sm ${darkMode ? 'text-white' : 'text-gray-900'}`}>{t.name}</p>
+                          <p className={`text-xs ${darkMode ? 'text-slate-400' : 'text-gray-500'}`}>
+                            {cat.name} • {formatDate(t.date)}
+                          </p>
+                        </div>
+                      </div>
+                      <p className={`font-semibold ${t.type === 'income' ? 'text-emerald-400' : 'text-rose-400'}`}>
+                        {t.type === 'income' ? '+' : '-'}{formatCurrency(t.amount)}
+                      </p>
+                    </div>
+                  );
+                })}
+                {/* Total */}
+                <div className={`mt-4 pt-4 border-t ${darkMode ? 'border-slate-700' : 'border-gray-200'} flex justify-between`}>
+                  <span className={`font-semibold ${darkMode ? 'text-white' : 'text-gray-900'}`}>Total</span>
+                  <span className={`font-bold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+                    {formatCurrency(getFilteredTransactions().reduce((s, t) => s + (t.type === 'income' ? t.amount : -t.amount), 0))}
+                  </span>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    )}
+  </>
   );
 };
 

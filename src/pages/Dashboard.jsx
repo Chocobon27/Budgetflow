@@ -2,6 +2,7 @@ import React from 'react';
 import { useApp } from '../context/AppContext';
 import { useCalculations } from '../hooks';
 import { formatCurrency, formatDate } from '../utils/helpers';
+import { getLevel, getXpInLevel, getXpForNextLevel, getLevelTitle } from '../hooks/useAchievements';
 
 const Dashboard = ({ onEditTransaction, onDeleteTransaction }) => {
   const {
@@ -30,6 +31,13 @@ const Dashboard = ({ onEditTransaction, onDeleteTransaction }) => {
     return allBrands.find(b => b.id === brandId) || null;
   };
 
+  // Gamification data
+  const points = achievements.points || 0;
+  const level = getLevel(points);
+  const xpInLevel = getXpInLevel(points);
+  const xpNeeded = getXpForNextLevel();
+  const levelTitle = getLevelTitle(level);
+
   return (
     <div className="space-y-6">
       {/* Cards principales */}
@@ -55,7 +63,7 @@ const Dashboard = ({ onEditTransaction, onDeleteTransaction }) => {
         {/* Solde */}
         <div className={`p-6 rounded-2xl ${darkMode ? 'bg-slate-800/50 border-slate-700' : 'bg-white border-gray-200'} border backdrop-blur-sm`}>
           <div className="flex items-center justify-between mb-3">
-            <span className={`text-sm font-medium ${darkMode ? 'text-slate-400' : 'text-gray-500'}`}>Solde restant</span>
+            <span className={`text-sm font-medium ${darkMode ? 'text-slate-400' : 'text-gray-500'}`}>Solde restant du mois</span>
             <span className={`w-10 h-10 rounded-xl ${getMonthlyData.balance >= 0 ? 'bg-cyan-500/20' : 'bg-orange-500/20'} flex items-center justify-center`}>
               {getMonthlyData.balance >= 0 ? '✨' : '⚠️'}
             </span>
@@ -65,19 +73,56 @@ const Dashboard = ({ onEditTransaction, onDeleteTransaction }) => {
           </p>
         </div>
 
-        {/* Streak */}
+        {/* Carte Gamification - Niveau & Streak */}
         <div
           onClick={() => setShowAchievementsModal(true)}
-          className={`p-6 rounded-2xl ${darkMode ? 'bg-slate-800/50 border-slate-700 hover:bg-slate-800' : 'bg-white border-gray-200 hover:bg-gray-50'} border backdrop-blur-sm cursor-pointer transition-all`}
+          className={`p-6 rounded-2xl border cursor-pointer transition-all hover:scale-[1.02] ${
+            darkMode
+              ? 'bg-gradient-to-br from-slate-800/80 to-slate-800/50 border-amber-500/20 hover:border-amber-500/40'
+              : 'bg-gradient-to-br from-amber-50 to-orange-50 border-amber-200 hover:border-amber-300'
+          }`}
         >
           <div className="flex items-center justify-between mb-3">
-            <span className={`text-sm font-medium ${darkMode ? 'text-slate-400' : 'text-gray-500'}`}>🔥 Streak</span>
-            <span className="w-10 h-10 rounded-xl bg-orange-500/20 flex items-center justify-center text-orange-400">🏆</span>
+            <div className="flex items-center gap-2">
+              <span className={`text-sm font-medium ${darkMode ? 'text-slate-400' : 'text-gray-500'}`}>
+                Niveau {level}
+              </span>
+              <span className={`text-xs px-2 py-0.5 rounded-full ${darkMode ? 'bg-amber-500/20 text-amber-400' : 'bg-amber-100 text-amber-600'}`}>
+                {levelTitle}
+              </span>
+            </div>
+            <span className="w-10 h-10 rounded-xl bg-amber-500/20 flex items-center justify-center text-amber-400">🏆</span>
           </div>
-          <p className="text-2xl font-bold text-orange-400">{achievements.streak} jour{achievements.streak > 1 ? 's' : ''}</p>
-          <p className={`text-xs mt-1 ${darkMode ? 'text-slate-500' : 'text-gray-400'}`}>
-            {achievements.points} points • {achievements.unlocked?.length || 0} badges
-          </p>
+
+          {/* Barre XP */}
+          <div className="mb-3">
+            <div className="flex justify-between text-xs mb-1">
+              <span className={darkMode ? 'text-slate-500' : 'text-gray-400'}>{xpInLevel}/{xpNeeded} XP</span>
+              <span className="text-amber-500 font-medium">{points} pts</span>
+            </div>
+            <div className={`h-2 rounded-full overflow-hidden ${darkMode ? 'bg-slate-700' : 'bg-amber-100'}`}>
+              <div
+                className="h-full rounded-full bg-gradient-to-r from-amber-400 to-orange-500 transition-all duration-1000"
+                style={{ width: `${(xpInLevel / xpNeeded) * 100}%` }}
+              />
+            </div>
+          </div>
+
+          {/* Streak & Badges */}
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-1">
+              <span className="text-lg">🔥</span>
+              <span className={`text-lg font-bold ${darkMode ? 'text-orange-400' : 'text-orange-500'}`}>
+                {achievements.streak || 0}
+              </span>
+              <span className={`text-xs ${darkMode ? 'text-slate-500' : 'text-gray-400'}`}>
+                jour{(achievements.streak || 0) > 1 ? 's' : ''}
+              </span>
+            </div>
+            <div className={`text-xs ${darkMode ? 'text-slate-500' : 'text-gray-400'}`}>
+              {achievements.unlocked?.length || 0} badges débloqués
+            </div>
+          </div>
         </div>
 
         {/* Épargne */}
@@ -100,7 +145,7 @@ const Dashboard = ({ onEditTransaction, onDeleteTransaction }) => {
         
         {transactions.length === 0 ? (
           <div className={`text-center py-12 ${darkMode ? 'text-slate-500' : 'text-gray-400'}`}>
-            <span className="text-4xl block mb-3">📭</span>
+            <span className="text-4xl block mb-3">🔭</span>
             <p>Aucune transaction pour le moment</p>
           </div>
         ) : (

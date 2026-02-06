@@ -28,6 +28,11 @@ const Shared = () => {
     category: ''
   });
 
+  // État pour l'historique
+  const [showHistoryModal, setShowHistoryModal] = useState(false);
+  const [historyData, setHistoryData] = useState([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+
   const getCategoryInfo = (categoryId) => {
     return allCategories.find(c => c.id === categoryId) || {
       id: categoryId,
@@ -77,6 +82,48 @@ const Shared = () => {
     });
     setSharedFormData({ name: '', amount: '', category: '' });
     setShowSharedTransactionModal(false);
+  };
+
+  // Charger l'historique du budget partagé
+  const loadHistory = async () => {
+    if (!currentSharedBudget) return;
+    setHistoryLoading(true);
+    try {
+      const data = await api.getSharedBudgetHistory(currentSharedBudget.id);
+      setHistoryData(data.history || []);
+    } catch (error) {
+      console.error('Erreur chargement historique:', error);
+      showAlert('Erreur', 'Impossible de charger l\'historique', 'error');
+    }
+    setHistoryLoading(false);
+  };
+
+  // Formater l'action pour l'affichage
+  const formatHistoryAction = (item) => {
+    const icons = {
+      'BUDGET_CREATED': '🎉', 'MEMBER_JOINED': '👋', 'MEMBER_LEFT': '🚪',
+      'MEMBER_REMOVED': '❌', 'TRANSACTION_ADDED': '➕', 'TRANSACTION_DELETED': '🗑️',
+      'SAVINGS_UPDATED': '💰'
+    };
+    const icon = icons[item.actionType] || '📝';
+    let description = '';
+    switch (item.actionType) {
+      case 'BUDGET_CREATED': description = `a créé le budget "${item.details?.name || ''}"`; break;
+      case 'MEMBER_JOINED': description = 'a rejoint le budget'; break;
+      case 'MEMBER_LEFT': description = 'a quitté le budget'; break;
+      case 'MEMBER_REMOVED': description = 'a retiré un membre du budget'; break;
+      case 'TRANSACTION_ADDED':
+        description = `a ajouté ${item.details?.type === 'income' ? 'un revenu' : 'une dépense'} : ${item.details?.name} (${formatCurrency(item.details?.amount || 0)})`;
+        break;
+      case 'TRANSACTION_DELETED':
+        description = `a supprimé : ${item.details?.name} (${formatCurrency(item.details?.amount || 0)})`;
+        break;
+      case 'SAVINGS_UPDATED':
+        description = `a modifié l'épargne : ${formatCurrency(item.details?.oldAmount || 0)} → ${formatCurrency(item.details?.newAmount || 0)}`;
+        break;
+      default: description = item.actionType;
+    }
+    return { icon, description };
   };
 
   // Stats du budget partagé actif
@@ -240,6 +287,12 @@ const Shared = () => {
               >
                 + Dépense
               </button>
+              <button
+                onClick={() => { loadHistory(); setShowHistoryModal(true); }}
+                className={`px-4 py-2 rounded-xl ${darkMode ? 'bg-slate-700 hover:bg-slate-600' : 'bg-gray-200 hover:bg-gray-300'} text-sm font-medium`}
+              >
+                📜 Historique
+              </button>
             </div>
           </div>
 
@@ -370,6 +423,62 @@ const Shared = () => {
               >
                 + Ajouter
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Historique */}
+      {showHistoryModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm" onClick={() => setShowHistoryModal(false)}>
+          <div className={`w-full max-w-lg max-h-[80vh] ${darkMode ? 'bg-slate-800' : 'bg-white'} rounded-2xl shadow-2xl flex flex-col`} onClick={e => e.stopPropagation()}>
+            <div className={`p-4 border-b ${darkMode ? 'border-slate-700' : 'border-gray-200'} flex-shrink-0`}>
+              <div className="flex items-center justify-between">
+                <div>
+                  <h3 className={`text-lg font-bold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+                    📜 Historique des modifications
+                  </h3>
+                  <p className={`text-sm ${darkMode ? 'text-slate-400' : 'text-gray-500'}`}>
+                    {currentSharedBudget?.name}
+                  </p>
+                </div>
+                <button onClick={() => setShowHistoryModal(false)} className={`p-2 rounded-lg ${darkMode ? 'hover:bg-slate-700' : 'hover:bg-gray-100'}`}>✕</button>
+              </div>
+            </div>
+            <div className="overflow-y-auto flex-1 p-4">
+              {historyLoading ? (
+                <div className={`text-center py-8 ${darkMode ? 'text-slate-500' : 'text-gray-400'}`}>
+                  <span className="text-4xl block mb-2 animate-spin">⏳</span>
+                  <p>Chargement...</p>
+                </div>
+              ) : historyData.length === 0 ? (
+                <div className={`text-center py-8 ${darkMode ? 'text-slate-500' : 'text-gray-400'}`}>
+                  <span className="text-4xl block mb-2">📭</span>
+                  <p>Aucun historique disponible</p>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {historyData.map((item, i) => {
+                    const { icon, description } = formatHistoryAction(item);
+                    return (
+                      <div key={item.id || i} className={`p-3 rounded-xl ${darkMode ? 'bg-slate-700/50' : 'bg-gray-50'}`}>
+                        <div className="flex items-start gap-3">
+                          <span className="text-xl mt-0.5">{icon}</span>
+                          <div className="flex-1 min-w-0">
+                            <p className={`text-sm ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+                              <span className="font-medium">{item.userName || 'Utilisateur'}</span>{' '}
+                              {description}
+                            </p>
+                            <p className={`text-xs mt-1 ${darkMode ? 'text-slate-500' : 'text-gray-400'}`}>
+                              {new Date(item.createdAt).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           </div>
         </div>

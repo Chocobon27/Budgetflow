@@ -10,12 +10,23 @@ const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const { body, param, query, validationResult } = require('express-validator');
 const hpp = require('hpp');
+const webpush = require('web-push');
+
+// Configuration VAPID pour les notifications Push
+if (process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY) {
+  webpush.setVapidDetails(
+    process.env.VAPID_EMAIL || `mailto:admin@${(process.env.APP_URL || 'https://localhost').replace(/^https?:\/\//, '')}`,
+    process.env.VAPID_PUBLIC_KEY,
+    process.env.VAPID_PRIVATE_KEY
+  );
+  console.log('✅ Web Push configured');
+}
 
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
-    origin: process.env.CORS_ORIGIN || 'https://fin.yugary-esport.fr',
+    origin: process.env.CORS_ORIGIN || process.env.APP_URL || 'https://localhost',
     methods: ['GET', 'POST', 'PUT', 'DELETE'],
     credentials: true
   },
@@ -24,6 +35,10 @@ const io = new Server(server, {
   allowUpgrades: true
 });
 const PORT = process.env.PORT || 3001;
+
+// Construire l'URL WSS dynamiquement depuis APP_URL
+const appUrl = process.env.APP_URL || 'https://localhost';
+const wssUrl = appUrl.replace(/^https?/, 'wss');
 
 // ============================================
 // SÉCURITÉ - Middlewares
@@ -37,7 +52,7 @@ app.use(helmet({
       scriptSrc: ["'self'"],
       styleSrc: ["'self'", "'unsafe-inline'"],
       imgSrc: ["'self'", "data:", "blob:"],
-      connectSrc: ["'self'", "wss://fin.yugary-esport.fr"],
+      connectSrc: ["'self'", wssUrl],
       fontSrc: ["'self'"],
       objectSrc: ["'none'"],
       mediaSrc: ["'self'"],
@@ -54,7 +69,7 @@ app.use(helmet({
 
 // CORS restrictif
 app.use(cors({
-  origin: process.env.CORS_ORIGIN || 'https://fin.yugary-esport.fr',
+  origin: process.env.CORS_ORIGIN || process.env.APP_URL || 'https://localhost',
   methods: ['GET', 'POST', 'PUT', 'DELETE'],
   allowedHeaders: ['Content-Type', 'Authorization'],
   credentials: true,
@@ -147,6 +162,18 @@ const apiLog = async (level, message, details = {}) => {
     );
   } catch (err) {
     console.error('Log error:', err);
+  }
+};
+
+// Logger les actions sur les budgets partagés
+const logSharedAction = async (budgetId, userId, actionType, details = {}) => {
+  try {
+    await pool.query(
+      'INSERT INTO shared_budget_history (budget_id, user_id, action_type, details) VALUES ($1, $2, $3, $4)',
+      [budgetId, userId, actionType, JSON.stringify(details)]
+    );
+  } catch (err) {
+    console.error('Shared budget log error:', err);
   }
 };
 
@@ -428,15 +455,42 @@ app.get('/api/transactions', authenticateToken, async (req, res) => {
 app.post('/api/transactions', authenticateToken, async (req, res) => {
   try {
     const { name, amount, type, category, brand, date, recurring, recurringFrequency, isFixedExpense } = req.body;
+    
+    // Calculer next_occurrence si récurrent
+    let nextOccurrence = null;
+    if (recurring) {
+      const transactionDate = new Date(date);
+      switch (recurringFrequency) {
+        case 'quarterly':
+          nextOccurrence = new Date(transactionDate.setMonth(transactionDate.getMonth() + 3));
+          break;
+        case 'yearly':
+          nextOccurrence = new Date(transactionDate.setFullYear(transactionDate.getFullYear() + 1));
+          break;
+        case 'monthly':
+        default:
+          nextOccurrence = new Date(transactionDate.setMonth(transactionDate.getMonth() + 1));
+          break;
+      }
+      nextOccurrence = nextOccurrence.toISOString().split('T')[0];
+    }
+    
     const result = await pool.query(
-      'INSERT INTO transactions (user_id, name, amount, type, category, brand, date, recurring, recurring_frequency, is_fixed_expense) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *',
-      [req.user.id, name, amount, type, category, brand, date, recurring || false, recurringFrequency || 'monthly', isFixedExpense || false]
+      'INSERT INTO transactions (user_id, name, amount, type, category, brand, date, recurring, recurring_frequency, is_fixed_expense, next_occurrence) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *',
+      [req.user.id, sanitizeString(name), amount, type, sanitizeString(category), sanitizeString(brand || ''), date, recurring || false, recurringFrequency || 'monthly', isFixedExpense || false, nextOccurrence]
     );
     const t = result.rows[0];
-    const transaction = { id: t.id, name: t.name, amount: parseFloat(t.amount), type: t.type, category: t.category, brand: t.brand, date: t.date, recurring: t.recurring, recurringFrequency: t.recurring_frequency, isFixedExpense: t.is_fixed_expense, createdAt: t.created_at };
+    const transaction = { id: t.id, name: t.name, amount: parseFloat(t.amount), type: t.type, category: t.category, brand: t.brand, date: t.date, recurring: t.recurring, recurringFrequency: t.recurring_frequency, isFixedExpense: t.is_fixed_expense, nextOccurrence: t.next_occurrence, createdAt: t.created_at };
     emitToUser(req.user.id, 'transaction:created', transaction);
     res.json(transaction);
+    // Vérification automatique des achievements après ajout
+    setTimeout(async () => {
+      try {
+        await checkAchievementsForUser(req.user.id);
+      } catch (e) { /* silent */ }
+    }, 1000);
   } catch (error) {
+    console.error('Add transaction error:', error);
     res.status(500).json({ error: 'Erreur serveur' });
   }
 });
@@ -444,16 +498,37 @@ app.post('/api/transactions', authenticateToken, async (req, res) => {
 app.put('/api/transactions/:id', authenticateToken, async (req, res) => {
   try {
     const { name, amount, type, category, brand, date, recurring, recurringFrequency, isFixedExpense } = req.body;
+    
+    // Calculer next_occurrence si récurrent
+    let nextOccurrence = null;
+    if (recurring) {
+      const transactionDate = new Date(date);
+      switch (recurringFrequency) {
+        case 'quarterly':
+          nextOccurrence = new Date(transactionDate.setMonth(transactionDate.getMonth() + 3));
+          break;
+        case 'yearly':
+          nextOccurrence = new Date(transactionDate.setFullYear(transactionDate.getFullYear() + 1));
+          break;
+        case 'monthly':
+        default:
+          nextOccurrence = new Date(transactionDate.setMonth(transactionDate.getMonth() + 1));
+          break;
+      }
+      nextOccurrence = nextOccurrence.toISOString().split('T')[0];
+    }
+    
     const result = await pool.query(
-      'UPDATE transactions SET name=$1, amount=$2, type=$3, category=$4, brand=$5, date=$6, recurring=$7, recurring_frequency=$8, is_fixed_expense=$9 WHERE id=$10 AND user_id=$11 RETURNING *',
-      [name, amount, type, category, brand, date, recurring, recurringFrequency || 'monthly', isFixedExpense, req.params.id, req.user.id]
+      'UPDATE transactions SET name=$1, amount=$2, type=$3, category=$4, brand=$5, date=$6, recurring=$7, recurring_frequency=$8, is_fixed_expense=$9, next_occurrence=$10 WHERE id=$11 AND user_id=$12 RETURNING *',
+      [sanitizeString(name), amount, type, sanitizeString(category), sanitizeString(brand || ''), date, recurring || false, recurringFrequency || 'monthly', isFixedExpense || false, nextOccurrence, req.params.id, req.user.id]
     );
     if (result.rows.length === 0) return res.status(404).json({ error: 'Non trouvé' });
     const t = result.rows[0];
-    const transaction = { id: t.id, name: t.name, amount: parseFloat(t.amount), type: t.type, category: t.category, brand: t.brand, date: t.date, recurring: t.recurring, recurringFrequency: t.recurring_frequency, isFixedExpense: t.is_fixed_expense, createdAt: t.created_at };
+    const transaction = { id: t.id, name: t.name, amount: parseFloat(t.amount), type: t.type, category: t.category, brand: t.brand, date: t.date, recurring: t.recurring, recurringFrequency: t.recurring_frequency, isFixedExpense: t.is_fixed_expense, nextOccurrence: t.next_occurrence, createdAt: t.created_at };
     emitToUser(req.user.id, 'transaction:updated', transaction);
     res.json(transaction);
   } catch (error) {
+    console.error('Update transaction error:', error);
     res.status(500).json({ error: 'Erreur serveur' });
   }
 });
@@ -734,13 +809,62 @@ app.delete('/api/templates/:id', authenticateToken, async (req, res) => {
   }
 });
 
+// Fonction pour envoyer une notification push (déclarée ici car utilisée dans achievements)
+const sendPushNotification = async (userId, title, body, data = {}) => {
+  try {
+    const subscriptions = await pool.query(
+      'SELECT endpoint, p256dh, auth FROM push_subscriptions WHERE user_id = $1',
+      [userId]
+    );
+
+    const payload = JSON.stringify({
+      title,
+      body,
+      icon: '/icons/icon-192x192.png',
+      badge: '/icons/icon-72x72.png',
+      data: { ...data, url: process.env.APP_URL || 'https://localhost' }
+    });
+
+    const results = await Promise.allSettled(
+      subscriptions.rows.map(sub => {
+        const pushSubscription = {
+          endpoint: sub.endpoint,
+          keys: { p256dh: sub.p256dh, auth: sub.auth }
+        };
+        return webpush.sendNotification(pushSubscription, payload);
+      })
+    );
+
+    for (let i = 0; i < results.length; i++) {
+      if (results[i].status === 'rejected' && results[i].reason?.statusCode === 410) {
+        await pool.query('DELETE FROM push_subscriptions WHERE endpoint = $1', [subscriptions.rows[i].endpoint]);
+      }
+    }
+
+    return results.filter(r => r.status === 'fulfilled').length;
+  } catch (error) {
+    console.error('Send push notification error:', error);
+    return 0;
+  }
+};
+
+// Helper : parse unlocked (gère string ou array depuis JSONB)
+const parseUnlocked = (raw) => {
+  if (!raw) return [];
+  if (Array.isArray(raw)) return raw;
+  if (typeof raw === 'string') {
+    try { return JSON.parse(raw); } catch (e) { return []; }
+  }
+  return [];
+};
+
 // ACHIEVEMENTS
 app.get('/api/achievements', authenticateToken, async (req, res) => {
   try {
     const result = await pool.query('SELECT * FROM achievements WHERE user_id = $1', [req.user.id]);
     if (result.rows.length === 0) return res.json({ unlocked: [], points: 0, streak: 0, lastActivity: null });
     const a = result.rows[0];
-    res.json({ unlocked: a.unlocked || [], points: a.points || 0, streak: a.streak || 0, lastActivity: a.last_activity });
+    res.json({ unlocked: parseUnlocked(a.unlocked), points: a.points || 0, streak: a.streak || 0, lastActivity: a.last_activity });
   } catch (error) {
     res.status(500).json({ error: 'Erreur serveur' });
   }
@@ -749,11 +873,159 @@ app.get('/api/achievements', authenticateToken, async (req, res) => {
 app.put('/api/achievements', authenticateToken, async (req, res) => {
   try {
     const { unlocked, points, streak, lastActivity } = req.body;
-    await pool.query('INSERT INTO achievements (user_id, unlocked, points, streak, last_activity) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (user_id) DO UPDATE SET unlocked=$2, points=$3, streak=$4, last_activity=$5', [req.user.id, JSON.stringify(unlocked || []), points || 0, streak || 0, lastActivity]);
-    const achievements = { unlocked, points, streak, lastActivity };
+    
+    // Récupérer les données actuelles en DB pour éviter toute régression
+    const existing = await pool.query('SELECT * FROM achievements WHERE user_id = $1', [req.user.id]);
+    
+    let finalUnlocked = unlocked || [];
+    let finalPoints = points || 0;
+    let finalStreak = streak || 0;
+    
+    if (existing.rows.length > 0) {
+      const current = existing.rows[0];
+      const currentUnlocked = parseUnlocked(current.unlocked);
+      
+      // Fusionner : garder tous les badges existants + ajouter les nouveaux
+      const existingIds = new Set(currentUnlocked.map(a => a.id));
+      const incomingParsed = Array.isArray(finalUnlocked) ? finalUnlocked : [];
+      const merged = [...currentUnlocked];
+      for (const badge of incomingParsed) {
+        if (!existingIds.has(badge.id)) {
+          merged.push(badge);
+        }
+      }
+      finalUnlocked = merged;
+      
+      // Ne jamais diminuer les points
+      finalPoints = Math.max(finalPoints, current.points || 0);
+      
+      // Ne jamais diminuer le streak (sauf reset légitime à 1)
+      if (finalStreak > 0 && finalStreak < (current.streak || 0) && finalStreak !== 1) {
+        finalStreak = current.streak || 0;
+      }
+    }
+    
+    await pool.query(
+      'INSERT INTO achievements (user_id, unlocked, points, streak, last_activity) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (user_id) DO UPDATE SET unlocked=$2, points=$3, streak=$4, last_activity=$5',
+      [req.user.id, JSON.stringify(finalUnlocked), finalPoints, finalStreak, lastActivity]
+    );
+    const achievements = { unlocked: finalUnlocked, points: finalPoints, streak: finalStreak, lastActivity };
     emitToUser(req.user.id, 'achievements:updated', achievements);
     res.json(achievements);
   } catch (error) {
+    console.error('PUT achievements error:', error);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+// Fonction helper pour vérifier les achievements d'un utilisateur
+const checkAchievementsForUser = async (userId) => {
+  try {
+    const [transResult, savingsResult, goalsResult, budgetsResult, debtsResult, templatesResult, sharedResult, longTermResult, achievResult] = await Promise.all([
+      pool.query('SELECT COUNT(*) as total, COUNT(CASE WHEN type = \'income\' THEN 1 END) as incomes, COUNT(CASE WHEN type = \'expense\' THEN 1 END) as expenses FROM transactions WHERE user_id = $1', [userId]),
+      pool.query('SELECT amount FROM savings WHERE user_id = $1', [userId]),
+      pool.query('SELECT * FROM savings_goals WHERE user_id = $1', [userId]),
+      pool.query('SELECT COUNT(*) as total FROM category_budgets WHERE user_id = $1 AND amount > 0', [userId]),
+      pool.query('SELECT * FROM debts WHERE user_id = $1', [userId]),
+      pool.query('SELECT COUNT(*) as total FROM templates WHERE user_id = $1', [userId]),
+      pool.query('SELECT COUNT(*) as total FROM shared_budget_members WHERE user_id = $1', [userId]),
+      pool.query('SELECT COUNT(*) as total FROM long_term_goals WHERE user_id = $1', [userId]),
+      pool.query('SELECT * FROM achievements WHERE user_id = $1', [userId]),
+    ]);
+
+    const current = achievResult.rows[0] || { unlocked: [], points: 0, streak: 0 };
+    const parsedUnlocked = parseUnlocked(current.unlocked);
+    const unlockedIds = new Set(parsedUnlocked.map(a => a.id));
+    const newUnlocks = [];
+    const savingsAmount = parseFloat(savingsResult.rows[0]?.amount) || 0;
+    const totalTx = parseInt(transResult.rows[0]?.total) || 0;
+
+    const checks = [
+      { id: 'first_transaction', condition: totalTx >= 1, points: 10 },
+      { id: 'first_income', condition: parseInt(transResult.rows[0]?.incomes) > 0, points: 10 },
+      { id: 'first_expense', condition: parseInt(transResult.rows[0]?.expenses) > 0, points: 10 },
+      { id: 'first_savings', condition: savingsAmount > 0, points: 15 },
+      { id: 'first_budget', condition: parseInt(budgetsResult.rows[0]?.total) > 0, points: 15 },
+      { id: 'first_goal', condition: goalsResult.rows.length > 0, points: 15 },
+      { id: 'savings_100', condition: savingsAmount >= 100, points: 20 },
+      { id: 'savings_500', condition: savingsAmount >= 500, points: 40 },
+      { id: 'savings_1000', condition: savingsAmount >= 1000, points: 60 },
+      { id: 'savings_5000', condition: savingsAmount >= 5000, points: 100 },
+      { id: 'savings_10000', condition: savingsAmount >= 10000, points: 200 },
+      { id: 'transactions_10', condition: totalTx >= 10, points: 15 },
+      { id: 'transactions_50', condition: totalTx >= 50, points: 30 },
+      { id: 'transactions_100', condition: totalTx >= 100, points: 50 },
+      { id: 'transactions_250', condition: totalTx >= 250, points: 100 },
+      { id: 'transactions_500', condition: totalTx >= 500, points: 200 },
+      { id: 'template_user', condition: parseInt(templatesResult.rows[0]?.total) >= 3, points: 20 },
+      { id: 'shared_budget', condition: parseInt(sharedResult.rows[0]?.total) > 0, points: 25 },
+      { id: 'long_term_goal', condition: parseInt(longTermResult.rows[0]?.total) > 0, points: 20 },
+      { id: 'all_budgets_set', condition: parseInt(budgetsResult.rows[0]?.total) >= 5, points: 25 },
+    ];
+
+    const now = new Date().toISOString();
+    let newPoints = current.points || 0;
+    const newUnlockedList = [...parsedUnlocked];
+
+    for (const check of checks) {
+      if (check.condition && !unlockedIds.has(check.id)) {
+        newUnlockedList.push({ id: check.id, unlockedAt: now });
+        newPoints += check.points;
+        newUnlocks.push(check.id);
+      }
+    }
+
+    if (goalsResult.rows.some(g => parseFloat(g.current) >= parseFloat(g.target)) && !unlockedIds.has('goal_reached')) {
+      newUnlockedList.push({ id: 'goal_reached', unlockedAt: now });
+      newPoints += 75;
+      newUnlocks.push('goal_reached');
+    }
+
+    for (const debt of debtsResult.rows) {
+      const schedule = await pool.query('SELECT paid FROM debt_schedule WHERE debt_id = $1', [debt.id]);
+      if (schedule.rows.length > 0 && schedule.rows.every(s => s.paid) && !unlockedIds.has('debt_free')) {
+        newUnlockedList.push({ id: 'debt_free', unlockedAt: now });
+        newPoints += 100;
+        newUnlocks.push('debt_free');
+        break;
+      }
+    }
+
+    if (newUnlocks.length > 0) {
+      await pool.query(
+        'UPDATE achievements SET unlocked = $1, points = $2 WHERE user_id = $3',
+        [JSON.stringify(newUnlockedList), newPoints, userId]
+      );
+
+      for (const id of newUnlocks) {
+        const prefs = await pool.query('SELECT goal_achieved FROM notification_preferences WHERE user_id = $1', [userId]);
+        if (prefs.rows[0]?.goal_achieved !== false) {
+          await sendPushNotification(userId, '🏆 Badge débloqué !', `Vous avez débloqué un nouveau badge !`, { type: 'achievement', achievementId: id });
+        }
+      }
+
+      emitToUser(userId, 'achievements:updated', {
+        unlocked: newUnlockedList,
+        points: newPoints,
+        streak: current.streak,
+        lastActivity: current.last_activity
+      });
+    }
+
+    return { newUnlocks, totalPoints: newPoints, totalBadges: newUnlockedList.length };
+  } catch (error) {
+    console.error('Achievement check error for user', userId, ':', error);
+    return { newUnlocks: [], totalPoints: 0, totalBadges: 0 };
+  }
+};
+
+// Endpoint API pour vérification des achievements
+app.post('/api/achievements/check', authenticateToken, async (req, res) => {
+  try {
+    const result = await checkAchievementsForUser(req.user.id);
+    res.json(result);
+  } catch (error) {
+    console.error('Achievement check error:', error);
     res.status(500).json({ error: 'Erreur serveur' });
   }
 });
@@ -816,6 +1088,10 @@ app.post('/api/shared-budgets', authenticateToken, async (req, res) => {
     await pool.query('INSERT INTO shared_savings (shared_budget_id, amount) VALUES ($1, 0)', [budget.id]);
     const userResult = await pool.query('SELECT name, email FROM users WHERE id = $1', [req.user.id]);
     const user = userResult.rows[0];
+    
+    // Logger l'action
+    await logSharedAction(budget.id, req.user.id, 'BUDGET_CREATED', { name: budget.name });
+    
     res.json({ id: budget.id, name: budget.name, createdBy: budget.created_by, inviteCode: budget.invite_code, createdAt: budget.created_at, members: [{ userId: req.user.id, userName: user.name, email: user.email, role: 'owner', joinedAt: new Date().toISOString() }], transactions: [], categories: [], savings: 0 });
   } catch (error) {
     console.error('Create shared budget error:', error);
@@ -832,6 +1108,9 @@ app.post('/api/shared-budgets/join', authenticateToken, async (req, res) => {
     const memberCheck = await pool.query('SELECT * FROM shared_budget_members WHERE shared_budget_id = $1 AND user_id = $2', [budget.id, req.user.id]);
     if (memberCheck.rows.length > 0) return res.status(400).json({ error: 'Déjà membre' });
     await pool.query('INSERT INTO shared_budget_members (shared_budget_id, user_id, role) VALUES ($1, $2, $3)', [budget.id, req.user.id, 'member']);
+    
+    // Logger l'action
+    await logSharedAction(budget.id, req.user.id, 'MEMBER_JOINED', { userName: user.name });
     
     // Rejoindre la room WebSocket
     const userSockets = connectedUsers.get(req.user.id);
@@ -887,6 +1166,10 @@ app.post('/api/shared-budgets/:id/leave', authenticateToken, async (req, res) =>
       return res.json({ message: 'Budget supprimé' });
     }
     await pool.query('DELETE FROM shared_budget_members WHERE shared_budget_id = $1 AND user_id = $2', [budgetId, req.user.id]);
+    
+    // Logger l'action
+    await logSharedAction(budgetId, req.user.id, 'MEMBER_LEFT', {});
+    
     emitToSharedBudget(budgetId, 'sharedBudget:memberLeft', { budgetId: parseInt(budgetId), userId: req.user.id });
     res.json({ message: 'Vous avez quitté le budget' });
   } catch (error) {
@@ -918,6 +1201,9 @@ app.delete('/api/shared-budgets/:id/members/:userId', authenticateToken, async (
       'DELETE FROM shared_budget_members WHERE shared_budget_id = $1 AND user_id = $2',
       [budgetId, userId]
     );
+    
+    // Logger l'action
+    await logSharedAction(budgetId, req.user.id, 'MEMBER_REMOVED', { removedUserId: parseInt(userId) });
     
     // Notifier via WebSocket
     emitToSharedBudget(budgetId, 'sharedBudget:memberRemoved', {
@@ -969,6 +1255,10 @@ app.post('/api/shared-budgets/:id/transactions', authenticateToken, async (req, 
     const userResult = await pool.query('SELECT name FROM users WHERE id = $1', [req.user.id]);
     const t = result.rows[0];
     const transaction = { id: t.id, name: t.name, amount: parseFloat(t.amount), type: t.type, category: t.category, brand: t.brand, date: t.date, addedBy: req.user.id, addedByName: userResult.rows[0]?.name, createdAt: t.created_at };
+    
+    // Logger l'action
+    await logSharedAction(budgetId, req.user.id, 'TRANSACTION_ADDED', { transactionId: t.id, name: t.name, amount: parseFloat(t.amount), type: t.type });
+    
     emitToSharedBudget(budgetId, 'sharedTransaction:created', { budgetId: parseInt(budgetId), transaction });
     res.json(transaction);
   } catch (error) {
@@ -981,10 +1271,62 @@ app.delete('/api/shared-budgets/:budgetId/transactions/:transactionId', authenti
     const { budgetId, transactionId } = req.params;
     const memberCheck = await pool.query('SELECT * FROM shared_budget_members WHERE shared_budget_id = $1 AND user_id = $2', [budgetId, req.user.id]);
     if (memberCheck.rows.length === 0) return res.status(403).json({ error: 'Accès refusé' });
+    
+    // Récupérer les infos de la transaction avant suppression
+    const txResult = await pool.query('SELECT name, amount, type FROM shared_transactions WHERE id = $1', [transactionId]);
+    const txInfo = txResult.rows[0];
+    
     await pool.query('DELETE FROM shared_transactions WHERE id = $1 AND shared_budget_id = $2', [transactionId, budgetId]);
+    
+    // Logger l'action
+    await logSharedAction(budgetId, req.user.id, 'TRANSACTION_DELETED', { transactionId: parseInt(transactionId), name: txInfo?.name, amount: parseFloat(txInfo?.amount), type: txInfo?.type });
+    
     emitToSharedBudget(budgetId, 'sharedTransaction:deleted', { budgetId: parseInt(budgetId), transactionId: parseInt(transactionId) });
     res.json({ message: 'Supprimé' });
   } catch (error) {
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+// Historique des actions du budget partagé
+app.get('/api/shared-budgets/:id/history', authenticateToken, async (req, res) => {
+  try {
+    const budgetId = req.params.id;
+    const { limit = 50, offset = 0 } = req.query;
+    
+    // Vérifier que l'utilisateur est membre
+    const memberCheck = await pool.query('SELECT * FROM shared_budget_members WHERE shared_budget_id = $1 AND user_id = $2', [budgetId, req.user.id]);
+    if (memberCheck.rows.length === 0) return res.status(403).json({ error: 'Accès refusé' });
+    
+    // Récupérer l'historique avec le nom de l'utilisateur
+    const result = await pool.query(`
+      SELECT h.*, u.name as user_name, u.email as user_email
+      FROM shared_budget_history h
+      JOIN users u ON h.user_id = u.id
+      WHERE h.budget_id = $1
+      ORDER BY h.created_at DESC
+      LIMIT $2 OFFSET $3
+    `, [budgetId, parseInt(limit), parseInt(offset)]);
+    
+    // Compter le total
+    const countResult = await pool.query('SELECT COUNT(*) FROM shared_budget_history WHERE budget_id = $1', [budgetId]);
+    
+    res.json({
+      history: result.rows.map(h => ({
+        id: h.id,
+        actionType: h.action_type,
+        details: h.details,
+        userId: h.user_id,
+        userName: h.user_name,
+        userEmail: h.user_email,
+        createdAt: h.created_at
+      })),
+      total: parseInt(countResult.rows[0].count),
+      limit: parseInt(limit),
+      offset: parseInt(offset)
+    });
+  } catch (error) {
+    console.error('Get shared budget history error:', error);
     res.status(500).json({ error: 'Erreur serveur' });
   }
 });
@@ -995,7 +1337,15 @@ app.put('/api/shared-budgets/:id/savings', authenticateToken, async (req, res) =
     const { amount } = req.body;
     const memberCheck = await pool.query('SELECT * FROM shared_budget_members WHERE shared_budget_id = $1 AND user_id = $2', [budgetId, req.user.id]);
     if (memberCheck.rows.length === 0) return res.status(403).json({ error: 'Accès refusé' });
+    // Récupérer l'ancien montant
+    const oldSavings = await pool.query('SELECT amount FROM shared_savings WHERE shared_budget_id = $1', [budgetId]);
+    const oldAmount = parseFloat(oldSavings.rows[0]?.amount) || 0;
+    
     await pool.query('INSERT INTO shared_savings (shared_budget_id, amount) VALUES ($1, $2) ON CONFLICT (shared_budget_id) DO UPDATE SET amount = $2', [budgetId, amount]);
+    
+    // Logger l'action
+    await logSharedAction(budgetId, req.user.id, 'SAVINGS_UPDATED', { oldAmount, newAmount: amount });
+    
     emitToSharedBudget(budgetId, 'sharedSavings:updated', { budgetId: parseInt(budgetId), amount });
     res.json({ amount });
   } catch (error) {
@@ -1003,10 +1353,102 @@ app.put('/api/shared-budgets/:id/savings', authenticateToken, async (req, res) =
   }
 });
 
+// ============================================
+// OBJECTIFS À LONG TERME
+// ============================================
+app.get('/api/long-term-goals', authenticateToken, async (req, res) => {
+  try {
+    const result = await pool.query('SELECT * FROM long_term_goals WHERE user_id = $1 ORDER BY target_date ASC', [req.user.id]);
+    res.json(result.rows.map(g => ({
+      id: g.id,
+      name: g.name,
+      icon: g.icon,
+      targetAmount: parseFloat(g.target_amount),
+      currentAmount: parseFloat(g.current_amount),
+      targetDate: g.target_date,
+      priority: g.priority,
+      notes: g.notes,
+      createdAt: g.created_at,
+      updatedAt: g.updated_at
+    })));
+  } catch (error) {
+    console.error('Get long term goals error:', error);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+app.post('/api/long-term-goals', authenticateToken, async (req, res) => {
+  try {
+    const { name, icon, targetAmount, currentAmount, targetDate, priority, notes } = req.body;
+    const result = await pool.query(
+      'INSERT INTO long_term_goals (user_id, name, icon, target_amount, current_amount, target_date, priority, notes) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *',
+      [req.user.id, name, icon || '🎯', targetAmount, currentAmount || 0, targetDate, priority || 'medium', notes]
+    );
+    const g = result.rows[0];
+    const goal = {
+      id: g.id,
+      name: g.name,
+      icon: g.icon,
+      targetAmount: parseFloat(g.target_amount),
+      currentAmount: parseFloat(g.current_amount),
+      targetDate: g.target_date,
+      priority: g.priority,
+      notes: g.notes,
+      createdAt: g.created_at,
+      updatedAt: g.updated_at
+    };
+    emitToUser(req.user.id, 'longTermGoal:created', goal);
+    res.json(goal);
+  } catch (error) {
+    console.error('Create long term goal error:', error);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+app.put('/api/long-term-goals/:id', authenticateToken, async (req, res) => {
+  try {
+    const { name, icon, targetAmount, currentAmount, targetDate, priority, notes } = req.body;
+    const result = await pool.query(
+      'UPDATE long_term_goals SET name=$1, icon=$2, target_amount=$3, current_amount=$4, target_date=$5, priority=$6, notes=$7, updated_at=CURRENT_TIMESTAMP WHERE id=$8 AND user_id=$9 RETURNING *',
+      [name, icon, targetAmount, currentAmount, targetDate, priority, notes, req.params.id, req.user.id]
+    );
+    if (result.rows.length === 0) return res.status(404).json({ error: 'Non trouvé' });
+    const g = result.rows[0];
+    const goal = {
+      id: g.id,
+      name: g.name,
+      icon: g.icon,
+      targetAmount: parseFloat(g.target_amount),
+      currentAmount: parseFloat(g.current_amount),
+      targetDate: g.target_date,
+      priority: g.priority,
+      notes: g.notes,
+      createdAt: g.created_at,
+      updatedAt: g.updated_at
+    };
+    emitToUser(req.user.id, 'longTermGoal:updated', goal);
+    res.json(goal);
+  } catch (error) {
+    console.error('Update long term goal error:', error);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+app.delete('/api/long-term-goals/:id', authenticateToken, async (req, res) => {
+  try {
+    await pool.query('DELETE FROM long_term_goals WHERE id = $1 AND user_id = $2', [req.params.id, req.user.id]);
+    emitToUser(req.user.id, 'longTermGoal:deleted', { id: parseInt(req.params.id) });
+    res.json({ message: 'Supprimé' });
+  } catch (error) {
+    console.error('Delete long term goal error:', error);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
 // SYNC
 app.get('/api/sync', authenticateToken, async (req, res) => {
   try {
-    const [transactions, savings, savingsGoals, categoryBudgets, customCategories, customBrands, debts, templates, achievements, plannedBudget] = await Promise.all([
+    const [transactions, savings, savingsGoals, categoryBudgets, customCategories, customBrands, debts, templates, achievements, plannedBudget, longTermGoals] = await Promise.all([
       pool.query('SELECT * FROM transactions WHERE user_id = $1 ORDER BY date DESC', [req.user.id]),
       pool.query('SELECT amount FROM savings WHERE user_id = $1', [req.user.id]),
       pool.query('SELECT * FROM savings_goals WHERE user_id = $1', [req.user.id]),
@@ -1016,7 +1458,8 @@ app.get('/api/sync', authenticateToken, async (req, res) => {
       pool.query('SELECT * FROM debts WHERE user_id = $1', [req.user.id]),
       pool.query('SELECT * FROM templates WHERE user_id = $1', [req.user.id]),
       pool.query('SELECT * FROM achievements WHERE user_id = $1', [req.user.id]),
-      pool.query('SELECT * FROM planned_budget WHERE user_id = $1', [req.user.id])
+      pool.query('SELECT * FROM planned_budget WHERE user_id = $1', [req.user.id]),
+      pool.query('SELECT * FROM long_term_goals WHERE user_id = $1 ORDER BY target_date ASC', [req.user.id])
     ]);
     
     for (const debt of debts.rows) {
@@ -1031,7 +1474,7 @@ app.get('/api/sync', authenticateToken, async (req, res) => {
     const p = plannedBudget.rows[0];
     
     res.json({
-      transactions: transactions.rows.map(t => ({ id: t.id, name: t.name, amount: parseFloat(t.amount), type: t.type, category: t.category, brand: t.brand, date: t.date, recurring: t.recurring, recurringFrequency: t.recurring_frequency, isFixedExpense: t.is_fixed_expense, createdAt: t.created_at })),
+      transactions: transactions.rows.map(t => ({ id: t.id, name: t.name, amount: parseFloat(t.amount), type: t.type, category: t.category, brand: t.brand, date: t.date, recurring: t.recurring, recurringFrequency: t.recurring_frequency, isFixedExpense: t.is_fixed_expense, nextOccurrence: t.next_occurrence, lastGenerated: t.last_generated, parentRecurringId: t.parent_recurring_id, createdAt: t.created_at })),
       savings: parseFloat(savings.rows[0]?.amount) || 0,
       savingsGoals: savingsGoals.rows.map(g => ({ id: g.id, name: g.name, icon: g.icon, target: parseFloat(g.target), current: parseFloat(g.current), deadline: g.deadline, createdAt: g.created_at })),
       categoryBudgets: budgetsObj,
@@ -1039,8 +1482,9 @@ app.get('/api/sync', authenticateToken, async (req, res) => {
       customBrands: customBrands.rows,
       debts: debts.rows.map(d => ({ id: d.id, name: d.name, icon: d.icon, creditor: d.creditor, totalAmount: parseFloat(d.total_amount), interestRate: parseFloat(d.interest_rate), startDate: d.start_date, duration: d.duration, notes: d.notes, schedule: d.schedule, createdAt: d.created_at })),
       templates: templates.rows.map(t => ({ id: t.id, name: t.name, amount: parseFloat(t.amount), type: t.type, category: t.category, brand: t.brand, recurring: t.recurring, isFixedExpense: t.is_fixed_expense, createdAt: t.created_at })),
-      achievements: a ? { unlocked: a.unlocked || [], points: a.points || 0, streak: a.streak || 0, lastActivity: a.last_activity } : { unlocked: [], points: 0, streak: 0, lastActivity: null },
-      plannedBudget: p ? { expectedIncome: parseFloat(p.expected_income) || 0, expectedExpenses: parseFloat(p.expected_expenses) || 0, plannedSavings: parseFloat(p.planned_savings) || 0, categories: p.categories || {}, notes: p.notes || '', month: p.month, year: p.year } : {}
+      achievements: a ? { unlocked: parseUnlocked(a.unlocked), points: a.points || 0, streak: a.streak || 0, lastActivity: a.last_activity } : { unlocked: [], points: 0, streak: 0, lastActivity: null },
+      plannedBudget: p ? { expectedIncome: parseFloat(p.expected_income) || 0, expectedExpenses: parseFloat(p.expected_expenses) || 0, plannedSavings: parseFloat(p.planned_savings) || 0, categories: p.categories || {}, notes: p.notes || '', month: p.month, year: p.year } : {},
+      longTermGoals: longTermGoals.rows.map(g => ({ id: g.id, name: g.name, icon: g.icon, targetAmount: parseFloat(g.target_amount), currentAmount: parseFloat(g.current_amount), targetDate: g.target_date, priority: g.priority, notes: g.notes, createdAt: g.created_at, updatedAt: g.updated_at }))
     });
   } catch (error) {
     console.error('Sync error:', error);
@@ -1410,6 +1854,320 @@ app.get('/api/health', (req, res) => {
     websocket: true,
     connectedUsers: connectedUsers.size
   });
+});
+
+// ============================================
+// TRANSACTIONS RÉCURRENTES AUTOMATIQUES
+// ============================================
+const processRecurringTransactions = async () => {
+  console.log('🔄 Vérification des transactions récurrentes...');
+  
+  try {
+    const today = new Date().toISOString().split('T')[0];
+    
+    // Récupérer toutes les transactions récurrentes dont la prochaine occurrence est <= aujourd'hui
+    const result = await pool.query(`
+      SELECT * FROM transactions 
+      WHERE recurring = true 
+        AND next_occurrence IS NOT NULL 
+        AND next_occurrence <= $1
+    `, [today]);
+    
+    console.log(`📋 ${result.rows.length} transaction(s) récurrente(s) à traiter`);
+    
+    for (const transaction of result.rows) {
+      // Créer la nouvelle transaction
+      const newTransaction = await pool.query(`
+        INSERT INTO transactions (user_id, name, amount, type, category, brand, date, recurring, recurring_frequency, is_fixed_expense, parent_recurring_id)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, false, $8, $9, $10)
+        RETURNING *
+      `, [
+        transaction.user_id,
+        transaction.name,
+        transaction.amount,
+        transaction.type,
+        transaction.category,
+        transaction.brand,
+        transaction.next_occurrence,
+        transaction.recurring_frequency,
+        transaction.is_fixed_expense,
+        transaction.id
+      ]);
+      
+      // Calculer la prochaine occurrence
+      let nextDate;
+      const currentNext = new Date(transaction.next_occurrence);
+      
+      switch (transaction.recurring_frequency) {
+        case 'quarterly':
+          nextDate = new Date(currentNext.setMonth(currentNext.getMonth() + 3));
+          break;
+        case 'yearly':
+          nextDate = new Date(currentNext.setFullYear(currentNext.getFullYear() + 1));
+          break;
+        case 'monthly':
+        default:
+          nextDate = new Date(currentNext.setMonth(currentNext.getMonth() + 1));
+          break;
+      }
+      
+      // Mettre à jour la transaction récurrente avec la prochaine date
+      await pool.query(`
+        UPDATE transactions 
+        SET next_occurrence = $1, last_generated = $2 
+        WHERE id = $3
+      `, [nextDate.toISOString().split('T')[0], today, transaction.id]);
+      
+      // Notifier l'utilisateur via WebSocket
+      const t = newTransaction.rows[0];
+      const transactionData = {
+        id: t.id,
+        name: t.name,
+        amount: parseFloat(t.amount),
+        type: t.type,
+        category: t.category,
+        brand: t.brand,
+        date: t.date,
+        recurring: t.recurring,
+        recurringFrequency: t.recurring_frequency,
+        isFixedExpense: t.is_fixed_expense,
+        parentRecurringId: t.parent_recurring_id,
+        createdAt: t.created_at
+      };
+      
+      emitToUser(transaction.user_id, 'transaction:created', transactionData);
+      
+      console.log(`✅ Transaction générée: ${transaction.name} pour user ${transaction.user_id}`);
+    }
+    
+    if (result.rows.length > 0) {
+      console.log(`🎉 ${result.rows.length} transaction(s) récurrente(s) générée(s)`);
+    }
+  } catch (error) {
+    console.error('❌ Erreur transactions récurrentes:', error);
+  }
+};
+
+// Exécuter au démarrage
+setTimeout(processRecurringTransactions, 5000);
+
+// Exécuter toutes les heures
+setInterval(processRecurringTransactions, 60 * 60 * 1000);
+
+// Endpoint pour forcer le traitement (admin)
+app.post('/api/admin/process-recurring', authenticateToken, async (req, res) => {
+  try {
+    const hasPermission = await checkAdminPermission(req.user.id, 'manage_users');
+    if (!hasPermission) return res.status(403).json({ error: 'Permission insuffisante' });
+    
+    await processRecurringTransactions();
+    res.json({ success: true, message: 'Transactions récurrentes traitées' });
+  } catch (error) {
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+// ============================================
+// NOTIFICATIONS PUSH
+// ============================================
+
+// S'abonner aux notifications
+app.post('/api/push/subscribe', authenticateToken, async (req, res) => {
+  try {
+    const { endpoint, keys } = req.body;
+    
+    if (!endpoint || !keys?.p256dh || !keys?.auth) {
+      return res.status(400).json({ error: 'Données d\'abonnement invalides' });
+    }
+
+    await pool.query(`
+      INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth)
+      VALUES ($1, $2, $3, $4)
+      ON CONFLICT (user_id, endpoint) DO UPDATE SET p256dh = $3, auth = $4
+    `, [req.user.id, endpoint, keys.p256dh, keys.auth]);
+
+    await pool.query(`
+      INSERT INTO notification_preferences (user_id)
+      VALUES ($1)
+      ON CONFLICT (user_id) DO NOTHING
+    `, [req.user.id]);
+
+    res.json({ success: true, message: 'Abonnement enregistré' });
+  } catch (error) {
+    console.error('Push subscribe error:', error);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+// Se désabonner des notifications
+app.post('/api/push/unsubscribe', authenticateToken, async (req, res) => {
+  try {
+    const { endpoint } = req.body;
+    await pool.query(
+      'DELETE FROM push_subscriptions WHERE user_id = $1 AND endpoint = $2',
+      [req.user.id, endpoint]
+    );
+    res.json({ success: true, message: 'Désabonnement effectué' });
+  } catch (error) {
+    console.error('Push unsubscribe error:', error);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+// Récupérer les préférences de notifications
+app.get('/api/push/preferences', authenticateToken, async (req, res) => {
+  try {
+    const result = await pool.query(
+      'SELECT * FROM notification_preferences WHERE user_id = $1',
+      [req.user.id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.json({
+        debtReminders: true,
+        budgetAlerts: true,
+        goalAchieved: true,
+        recurringTransactions: true,
+        reminderDays: 3
+      });
+    }
+
+    const p = result.rows[0];
+    res.json({
+      debtReminders: p.debt_reminders,
+      budgetAlerts: p.budget_alerts,
+      goalAchieved: p.goal_achieved,
+      recurringTransactions: p.recurring_transactions,
+      reminderDays: p.reminder_days
+    });
+  } catch (error) {
+    console.error('Get push preferences error:', error);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+// Mettre à jour les préférences de notifications
+app.put('/api/push/preferences', authenticateToken, async (req, res) => {
+  try {
+    const { debtReminders, budgetAlerts, goalAchieved, recurringTransactions, reminderDays } = req.body;
+
+    await pool.query(`
+      INSERT INTO notification_preferences (user_id, debt_reminders, budget_alerts, goal_achieved, recurring_transactions, reminder_days)
+      VALUES ($1, $2, $3, $4, $5, $6)
+      ON CONFLICT (user_id) DO UPDATE SET
+        debt_reminders = $2,
+        budget_alerts = $3,
+        goal_achieved = $4,
+        recurring_transactions = $5,
+        reminder_days = $6,
+        updated_at = CURRENT_TIMESTAMP
+    `, [req.user.id, debtReminders, budgetAlerts, goalAchieved, recurringTransactions, reminderDays || 3]);
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Update push preferences error:', error);
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+// Récupérer la clé VAPID publique (pas besoin d'auth)
+app.get('/api/push/vapid-key', (req, res) => {
+  const key = process.env.VAPID_PUBLIC_KEY;
+  if (!key) {
+    return res.status(404).json({ error: 'Push notifications non configurées' });
+  }
+  res.json({ publicKey: key });
+});
+
+// Vérifier si l'utilisateur est abonné
+app.get('/api/push/status', authenticateToken, async (req, res) => {
+  try {
+    const result = await pool.query(
+      'SELECT COUNT(*) FROM push_subscriptions WHERE user_id = $1',
+      [req.user.id]
+    );
+    res.json({ subscribed: parseInt(result.rows[0].count) > 0 });
+  } catch (error) {
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+// sendPushNotification est déclarée plus haut (avant ACHIEVEMENTS)
+
+// Vérification des notifications (CRON)
+const checkAndSendNotifications = async () => {
+  console.log('🔔 Vérification des notifications...');
+
+  try {
+    const today = new Date();
+    
+    // 1. Échéances de dettes
+    const debtReminders = await pool.query(`
+      SELECT d.user_id, d.name, ds.date, ds.amount, np.reminder_days
+      FROM debts d
+      JOIN debt_schedule ds ON d.id = ds.debt_id
+      JOIN notification_preferences np ON d.user_id = np.user_id
+      WHERE np.debt_reminders = true
+        AND ds.paid = false
+        AND ds.date BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '1 day' * np.reminder_days
+    `);
+
+    for (const reminder of debtReminders.rows) {
+      const daysUntil = Math.ceil((new Date(reminder.date) - today) / (1000 * 60 * 60 * 24));
+      const dayText = daysUntil === 0 ? "aujourd'hui" : daysUntil === 1 ? 'demain' : `dans ${daysUntil} jours`;
+      
+      await sendPushNotification(
+        reminder.user_id,
+        '🔔 Échéance de dette',
+        `${reminder.name} : ${reminder.amount}€ ${dayText}`,
+        { type: 'debt_reminder', debtName: reminder.name }
+      );
+    }
+
+    // 2. Objectifs atteints
+    const goalAlerts = await pool.query(`
+      SELECT g.user_id, g.name, g.icon
+      FROM long_term_goals g
+      JOIN notification_preferences np ON g.user_id = np.user_id
+      WHERE np.goal_achieved = true
+        AND g.current_amount >= g.target_amount
+        AND g.updated_at >= CURRENT_DATE
+    `);
+
+    for (const goal of goalAlerts.rows) {
+      await sendPushNotification(
+        goal.user_id,
+        '🎉 Objectif atteint !',
+        `Félicitations ! "${goal.name}" est complété !`,
+        { type: 'goal_achieved', goalName: goal.name }
+      );
+    }
+
+    console.log(`🔔 Notifications vérifiées : ${debtReminders.rows.length} dettes, ${goalAlerts.rows.length} objectifs`);
+  } catch (error) {
+    console.error('❌ Erreur vérification notifications:', error);
+  }
+};
+
+// Exécuter toutes les heures
+setInterval(checkAndSendNotifications, 60 * 60 * 1000);
+
+// Exécuter au démarrage (après 15 secondes)
+setTimeout(checkAndSendNotifications, 15000);
+
+// Test notification (admin)
+app.post('/api/push/test', authenticateToken, async (req, res) => {
+  try {
+    const sent = await sendPushNotification(
+      req.user.id,
+      '🧪 Test Notification',
+      'Les notifications fonctionnent !',
+      { type: 'test' }
+    );
+    res.json({ success: true, sent });
+  } catch (error) {
+    res.status(500).json({ error: 'Erreur serveur' });
+  }
 });
 
 server.listen(PORT, '127.0.0.1', () => {

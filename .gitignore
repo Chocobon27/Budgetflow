@@ -38,6 +38,7 @@ temp/
 *.crt
 
 # Database dumps
-*.sql
+# Database dumps
+*.dump
 *.dump
 

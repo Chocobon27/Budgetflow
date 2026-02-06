@@ -4,6 +4,10 @@ import { Dashboard, Transactions, Statistics, Calendar, Budgets, Debts, Shared, 
 import { AlertDialog, ConfirmDialog } from './components/common';
 import { TransactionModal } from './components/transactions';
 import { SavingsModal, GoalModal, DebtModal, SimulatorModal, PlannedBudgetModal, BudgetModal, CreateSharedBudgetModal, JoinSharedBudgetModal, SharedBudgetDetailsModal } from './components/modals';
+import OfflineIndicator from './components/OfflineIndicator';
+import NotificationSettings from './components/NotificationSettings';
+import AchievementsModal from './components/modals/AchievementsModal';
+import AchievementToast from './components/AchievementToast';
 import api from './api';
 
 function App() {
@@ -77,6 +81,14 @@ function App() {
     setShowPlannedBudgetModal,
     showBudgetModal,
     setShowBudgetModal,
+    showNotificationsSettings,
+    setShowNotificationsSettings,
+    
+    // Achievements
+    showAchievementsModal,
+    setShowAchievementsModal,
+    newAchievement,
+    achievements,
     
     // Dialogs
     alertDialog,
@@ -89,7 +101,13 @@ function App() {
     showConfirm,
     closeConfirm,
     isAdmin,
-    loadUserData
+    loadUserData,
+
+    // Offline
+    isOnline,
+    pendingCount,
+    isSyncing,
+    addPendingAction
   } = useApp();
 
   // Auth form states
@@ -217,20 +235,53 @@ function App() {
       setShowModal(false);
       showAlert('Succès', 'Transaction ajoutée', 'success');
     } catch (error) {
-      showAlert('Erreur', error.message, 'error');
+      // Mode hors-ligne : sauvegarder localement
+      if (!isOnline || error.message?.includes('offline')) {
+        const success = await addPendingAction({
+          type: 'ADD_TRANSACTION',
+          endpoint: '/transactions',
+          method: 'POST',
+          body: transactionData
+        });
+        if (success) {
+          setShowModal(false);
+          showAlert('Hors-ligne', 'Transaction sauvegardée localement', 'warning');
+        } else {
+          showAlert('Erreur', 'Impossible de sauvegarder', 'error');
+        }
+      } else {
+        showAlert('Erreur', error.message, 'error');
+      }
     }
   };
 
   const handleUpdateTransaction = async (transactionData) => {
-    try {
-      await api.updateTransaction(transactionData.id, transactionData);
-      setShowModal(false);
-      setEditingTransaction(null);
-      showAlert('Succès', 'Transaction modifiée', 'success');
-    } catch (error) {
+  try {
+    await api.updateTransaction(transactionData.id, transactionData);
+    setShowModal(false);
+    setEditingTransaction(null);
+    showAlert('Succès', 'Transaction modifiée', 'success');
+  } catch (error) {
+    // Mode hors-ligne : sauvegarder localement
+    if (!isOnline || error.message?.includes('offline')) {
+      const success = await addPendingAction({
+        type: 'UPDATE_TRANSACTION',
+        endpoint: `/transactions/${transactionData.id}`,
+        method: 'PUT',
+        body: transactionData
+      });
+      if (success) {
+        setShowModal(false);
+        setEditingTransaction(null);
+        showAlert('Hors-ligne', 'Modification sauvegardée localement', 'warning');
+      } else {
+        showAlert('Erreur', 'Impossible de sauvegarder', 'error');
+      }
+    } else {
       showAlert('Erreur', error.message, 'error');
     }
-  };
+  }
+};
 
   const handleDeleteTransaction = (transactionId) => {
     showConfirm(
@@ -479,7 +530,13 @@ function App() {
           <div className="flex items-center gap-3">
             {/* WebSocket indicator */}
             <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-emerald-500' : 'bg-red-500'}`} title={isConnected ? 'Connecté' : 'Déconnecté'} />
-            
+            <button
+              onClick={() => setShowNotificationsSettings(true)}
+              className={`p-2 rounded-xl ${darkMode ? 'bg-slate-700 hover:bg-slate-600' : 'bg-gray-200 hover:bg-gray-300'}`}
+              title="Notifications"
+            >
+              🔔
+            </button>
             {/* Dark mode toggle */}
             <button
               onClick={() => setDarkMode(!darkMode)}
@@ -569,6 +626,14 @@ function App() {
         </button>
       </div>
 
+      {/* Offline Indicator */}
+      <OfflineIndicator
+        isOnline={isOnline}
+        pendingCount={pendingCount}
+        isSyncing={isSyncing}
+        darkMode={darkMode}
+      />
+
       {/* Modals */}
       {showModal && (
         <TransactionModal
@@ -587,7 +652,7 @@ function App() {
         />
       )}
 
-{confirmDialog.show && (
+      {confirmDialog.show && (
         <ConfirmDialog
           title={confirmDialog.title}
           message={confirmDialog.message}
@@ -640,6 +705,16 @@ function App() {
       {showJoinSharedBudget && (
         <JoinSharedBudgetModal onClose={() => setShowJoinSharedBudget(false)} />
       )}
+
+      {showNotificationsSettings && (
+        <NotificationSettings onClose={() => setShowNotificationsSettings(false)} />
+      )}
+
+      {showAchievementsModal && (
+        <AchievementsModal onClose={() => setShowAchievementsModal(false)} />
+      )}
+
+      <AchievementToast achievement={newAchievement} darkMode={darkMode} />
 
       {showSharedBudgetModal && currentSharedBudget && (
         <SharedBudgetDetailsModal

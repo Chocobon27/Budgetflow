@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
+import useOffline from '../hooks/useOffline';
 import { io } from 'socket.io-client';
 import api from '../api';
 import { CATEGORIES, POPULAR_BRANDS } from '../constants';
@@ -33,6 +34,20 @@ export const AppProvider = ({ children }) => {
   const [isConnected, setIsConnected] = useState(false);
 
   // ============================================
+  // ÉTATS - Mode Hors-ligne
+  // ============================================
+  const {
+    isOnline,
+    pendingCount,
+    isSyncing,
+    addPendingAction,
+    syncPendingActions,
+    cacheData,
+    getCachedData,
+    clearOfflineData
+  } = useOffline();
+
+  // ============================================
   // ÉTATS - UI
   // ============================================
   const [currentView, setCurrentView] = useState(() => {
@@ -64,6 +79,7 @@ export const AppProvider = ({ children }) => {
   const [quickTemplates, setQuickTemplates] = useState([]);
   const [achievements, setAchievements] = useState({ unlocked: [], streak: 0, lastActivity: null, points: 0 });
   const [plannedBudget, setPlannedBudget] = useState({});
+  const [longTermGoals, setLongTermGoals] = useState([]);
 
   // ============================================
   // ÉTATS - Budgets partagés
@@ -101,6 +117,8 @@ export const AppProvider = ({ children }) => {
   const [showPlannedBudgetModal, setShowPlannedBudgetModal] = useState(false);
   
   const [showBudgetModal, setShowBudgetModal] = useState(false);
+  const [showLongTermGoalModal, setShowLongTermGoalModal] = useState(false);
+  const [editingLongTermGoal, setEditingLongTermGoal] = useState(null);
   const [showExportModal, setShowExportModal] = useState(false);
   const [showNotificationsSettings, setShowNotificationsSettings] = useState(false);
 
@@ -164,34 +182,64 @@ export const AppProvider = ({ children }) => {
   // FONCTIONS - Chargement données
   // ============================================
   const loadUserData = useCallback(async () => {
+  try {
+    // Essayer de charger depuis l'API
+    const data = await api.sync();
+    if (data) {
+      setTransactions(data.transactions || []);
+      setCustomCategories(data.customCategories || []);
+      setCustomBrands(data.customBrands || []);
+      setSavings(data.savings || 0);
+      setSavingsGoals(data.savingsGoals || []);
+      setCategoryBudgets(data.categoryBudgets || {});
+      setDebts(data.debts || []);
+      setQuickTemplates(data.templates || []);
+      setAchievements(data.achievements || { unlocked: [], streak: 0, lastActivity: null, points: 0 });
+      setPlannedBudget(data.plannedBudget || {});
+      setLongTermGoals(data.longTermGoals || []);
+      
+      // Sauvegarder en cache pour le mode hors-ligne
+      cacheData('userData', data);
+      
+      const sharedData = await api.getSharedBudgets();
+      if (sharedData) {
+        setSharedBudgets(sharedData);
+        cacheData('sharedBudgets', sharedData);
+      }
+    }
+    
     try {
-      const data = await api.sync();
-      if (data) {
-        setTransactions(data.transactions || []);
-        setCustomCategories(data.customCategories || []);
-        setCustomBrands(data.customBrands || []);
-        setSavings(data.savings || 0);
-        setSavingsGoals(data.savingsGoals || []);
-        setCategoryBudgets(data.categoryBudgets || {});
-        setDebts(data.debts || []);
-        setQuickTemplates(data.templates || []);
-        setAchievements(data.achievements || { unlocked: [], streak: 0, lastActivity: null, points: 0 });
-        setPlannedBudget(data.plannedBudget || {});
-        
-        const sharedData = await api.getSharedBudgets();
-        if (sharedData) setSharedBudgets(sharedData);
+      const adminData = await api.checkAdmin();
+      setIsAdmin(adminData.isAdmin || false);
+    } catch (e) {
+      setIsAdmin(false);
+    }
+  } catch (error) {
+    console.error('Erreur chargement données:', error);
+    
+    // Mode hors-ligne : charger depuis le cache
+    if (!isOnline) {
+      console.log('📴 Chargement depuis le cache hors-ligne...');
+      const cachedUserData = await getCachedData('userData');
+      if (cachedUserData) {
+        setTransactions(cachedUserData.transactions || []);
+        setCustomCategories(cachedUserData.customCategories || []);
+        setCustomBrands(cachedUserData.customBrands || []);
+        setSavings(cachedUserData.savings || 0);
+        setSavingsGoals(cachedUserData.savingsGoals || []);
+        setCategoryBudgets(cachedUserData.categoryBudgets || {});
+        setDebts(cachedUserData.debts || []);
+        setQuickTemplates(cachedUserData.templates || []);
+        setAchievements(cachedUserData.achievements || { unlocked: [], streak: 0, lastActivity: null, points: 0 });
+        setPlannedBudget(cachedUserData.plannedBudget || {});
+        setLongTermGoals(cachedUserData.longTermGoals || []);
       }
       
-      try {
-        const adminData = await api.checkAdmin();
-        setIsAdmin(adminData.isAdmin || false);
-      } catch (e) {
-        setIsAdmin(false);
-      }
-    } catch (error) {
-      console.error('Erreur chargement données:', error);
+      const cachedSharedBudgets = await getCachedData('sharedBudgets');
+      if (cachedSharedBudgets) setSharedBudgets(cachedSharedBudgets);
     }
-  }, []);
+  }
+}, [isOnline, cacheData, getCachedData]);
 
   const loadAdminUsers = useCallback(async () => {
     if (!isAdmin) return;
@@ -235,29 +283,6 @@ export const AppProvider = ({ children }) => {
     localStorage.setItem('budgetflow_backupSettings', JSON.stringify(backupSettings));
   }, [backupSettings]);
 
-  // ============================================
-  // EFFETS - Auth check
-  // ============================================
-  useEffect(() => {
-    const checkAuth = async () => {
-      const token = api.getToken();
-      if (token) {
-        try {
-          const data = await api.verify();
-          if (data && data.user) {
-            setCurrentUser(data.user);
-            setIsAuthenticated(true);
-            await loadUserData();
-          }
-        } catch (error) {
-          console.error('Auth verification failed:', error);
-          api.removeToken();
-        }
-      }
-      setAuthLoading(false);
-    };
-    checkAuth();
-  }, [loadUserData]);
 
   // ============================================
   // EFFETS - WebSocket
@@ -270,7 +295,7 @@ export const AppProvider = ({ children }) => {
 
     console.log('🔌 Initializing WebSocket...');
     
-    const newSocket = io('https://fin.yugary-esport.fr', {
+    const newSocket = io(import.meta.env.VITE_APP_URL || window.location.origin, {
       path: '/socket.io',
       auth: { token },
       transports: ['polling', 'websocket'],
@@ -375,6 +400,22 @@ export const AppProvider = ({ children }) => {
     newSocket.on('debt:deleted', (data) => {
       console.log('📥 Debt deleted:', data);
       setDebts(prev => prev.filter(d => d.id !== data.id));
+    });
+
+    // === LONG TERM GOALS ===
+    newSocket.on('longTermGoal:created', (goal) => {
+      console.log('📥 Long term goal created:', goal);
+      setLongTermGoals(prev => [...prev, goal]);
+    });
+
+    newSocket.on('longTermGoal:updated', (goal) => {
+      console.log('📥 Long term goal updated:', goal);
+      setLongTermGoals(prev => prev.map(g => g.id === goal.id ? goal : g));
+    });
+
+    newSocket.on('longTermGoal:deleted', (data) => {
+      console.log('📥 Long term goal deleted:', data);
+      setLongTermGoals(prev => prev.filter(g => g.id !== data.id));
     });
 
     // === TEMPLATES ===
@@ -540,6 +581,70 @@ export const AppProvider = ({ children }) => {
     }
   }, [showAdminModal, isAdmin, currentView, loadAdminUsers]);
 
+  // Écouter les événements de synchronisation offline
+  useEffect(() => {
+    const handleOfflineSync = (event) => {
+      console.log('🔄 Sync offline terminée, rechargement des données...');
+      loadUserData();
+    };
+    
+    window.addEventListener('offlineSync', handleOfflineSync);
+    return () => window.removeEventListener('offlineSync', handleOfflineSync);
+  }, [loadUserData]);
+
+  // ============================================
+  // EFFETS - Auth check (une seule fois au montage)
+  // ============================================
+  useEffect(() => {
+    const checkAuth = async () => {
+      const token = api.getToken();
+      if (!token) {
+        setAuthLoading(false);
+        return;
+      }
+      
+      // Si hors-ligne, utiliser les données en cache sans vérifier le token
+      if (!navigator.onLine) {
+        console.log('📴 Mode hors-ligne : utilisation du cache');
+        const savedUser = localStorage.getItem('budgetflow_user');
+        if (savedUser) {
+          try {
+            setCurrentUser(JSON.parse(savedUser));
+            setIsAuthenticated(true);
+            // loadUserData va charger depuis le cache IndexedDB
+          } catch (e) {
+            console.error('Erreur parsing user:', e);
+          }
+        }
+        setAuthLoading(false);
+        return;
+      }
+      
+      // En ligne : vérifier le token avec l'API
+      try {
+        const data = await api.verify();
+        if (data && data.user) {
+          setCurrentUser(data.user);
+          setIsAuthenticated(true);
+          // Sauvegarder l'utilisateur pour le mode hors-ligne
+          localStorage.setItem('budgetflow_user', JSON.stringify(data.user));
+          await loadUserData();
+        }
+      } catch (error) {
+        console.error('Auth verification failed:', error);
+        // NE PAS supprimer le token si erreur réseau/offline
+        if (error.message !== 'offline' && navigator.onLine) {
+          api.removeToken();
+          localStorage.removeItem('budgetflow_user');
+        }
+      }
+      setAuthLoading(false);
+    };
+    
+    checkAuth();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // Exécuter UNE SEULE FOIS au montage
+
   // ============================================
   // VALEUR DU CONTEXTE
   // ============================================
@@ -578,6 +683,7 @@ export const AppProvider = ({ children }) => {
     quickTemplates, setQuickTemplates,
     achievements, setAchievements,
     plannedBudget, setPlannedBudget,
+    longTermGoals, setLongTermGoals,
 
     // Shared budgets
     sharedBudgets, setSharedBudgets,
@@ -611,6 +717,8 @@ export const AppProvider = ({ children }) => {
     showExportModal, setShowExportModal,
     showNotificationsSettings, setShowNotificationsSettings,
     showBudgetModal, setShowBudgetModal,
+    showLongTermGoalModal, setShowLongTermGoalModal,
+    editingLongTermGoal, setEditingLongTermGoal,
 
     // Dialogs
     confirmDialog, setConfirmDialog,
@@ -627,6 +735,10 @@ export const AppProvider = ({ children }) => {
 
     // Functions
     hasPermission, loadUserData,
+
+    // Offline
+    isOnline, pendingCount, isSyncing,
+    addPendingAction, syncPendingActions, clearOfflineData,
   };
 
   return (

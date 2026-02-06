@@ -1,5 +1,5 @@
-// Configuration API
-const API_URL = 'https://fin.yugary-esport.fr/api';
+// Configuration API - URL dynamique depuis .env (vide en dev = proxy Vite)
+const API_URL = (import.meta.env.VITE_APP_URL || '') + '/api';
 
 // Fonctions API
 const api = {
@@ -13,6 +13,11 @@ const api = {
   }),
   
   async request(endpoint, options = {}) {
+    // Si hors-ligne, rejeter immédiatement
+    if (!navigator.onLine) {
+      throw new Error('offline');
+    }
+    
     try {
       const response = await fetch(`${API_URL}${endpoint}`, {
         ...options,
@@ -20,6 +25,17 @@ const api = {
       });
       
       if (response.status === 401 || response.status === 403) {
+        // Ne pas déconnecter si on est en train de sync après reconnexion
+        const isReconnecting = sessionStorage.getItem('budgetflow_reconnecting');
+        const lastOffline = sessionStorage.getItem('budgetflow_last_offline');
+        const timeSinceOffline = lastOffline ? Date.now() - parseInt(lastOffline) : Infinity;
+        
+        // Protéger le token pendant 10 secondes après retour en ligne
+        if (isReconnecting || timeSinceOffline < 10000) {
+          console.warn('Auth error pendant reconnexion, ignoré (protégé)');
+          return null;
+        }
+        
         this.removeToken();
         window.location.reload();
         return null;
@@ -29,6 +45,11 @@ const api = {
       if (!response.ok) throw new Error(data.error || 'Erreur serveur');
       return data;
     } catch (error) {
+      // Erreur réseau = mode offline
+      if (error.name === 'TypeError' || error.message?.includes('fetch') || error.message?.includes('network') || error.message?.includes('Failed')) {
+        console.warn('API offline:', endpoint);
+        throw new Error('offline');
+      }
       console.error('API Error:', error);
       throw error;
     }
@@ -61,16 +82,16 @@ const api = {
   
   async verify() { return this.request('/auth/verify'); },
   async logout() {
-  try {
-    await this.request('/auth/logout', { method: 'POST' });
-  } catch (e) {
-    console.log('Logout request failed, clearing token anyway');
-  }
-  this.removeToken();
-  localStorage.removeItem('user');
-  localStorage.removeItem('token');
-  localStorage.removeItem('budgetflow_token');
-},
+    try {
+      await this.request('/auth/logout', { method: 'POST' });
+    } catch (e) {
+      console.log('Logout request failed, clearing token anyway');
+    }
+    this.removeToken();
+    localStorage.removeItem('user');
+    localStorage.removeItem('token');
+    localStorage.removeItem('budgetflow_token');
+  },
   
   async forgotPassword(email) {
     const response = await fetch(`${API_URL}/auth/forgot-password`, {
@@ -144,10 +165,71 @@ const api = {
   async leaveSharedBudget(id) { return this.request(`/shared-budgets/${id}/leave`, { method: 'POST' }); },
   async addSharedTransaction(budgetId, t) { return this.request(`/shared-budgets/${budgetId}/transactions`, { method: 'POST', body: JSON.stringify(t) }); },
   async deleteSharedTransaction(budgetId, tId) { return this.request(`/shared-budgets/${budgetId}/transactions/${tId}`, { method: 'DELETE' }); },
+  async getSharedBudgetHistory(budgetId, limit = 50, offset = 0) {
+    return this.request(`/shared-budgets/${budgetId}/history?limit=${limit}&offset=${offset}`);
+  },
   async updateSharedSavings(budgetId, amount) { return this.request(`/shared-budgets/${budgetId}/savings`, { method: 'PUT', body: JSON.stringify({ amount }) }); },
   async removeSharedMember(budgetId, userId) { return this.request(`/shared-budgets/${budgetId}/members/${userId}`, { method: 'DELETE' }); },
   async deleteSharedBudget(budgetId) { return this.request(`/shared-budgets/${budgetId}`, { method: 'DELETE' }); },
 
+  // Long Term Goals
+  async getLongTermGoals() {
+    return this.request('/long-term-goals');
+  },
+
+  async addLongTermGoal(data) {
+    return this.request('/long-term-goals', {
+      method: 'POST',
+      body: JSON.stringify(data)
+    });
+  },
+
+  async updateLongTermGoal(id, data) {
+    return this.request(`/long-term-goals/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(data)
+    });
+  },
+
+  async deleteLongTermGoal(id) {
+    return this.request(`/long-term-goals/${id}`, {
+      method: 'DELETE'
+    });
+  },
+
+  // Push Notifications
+  async getVapidKey() {
+    return this.request('/push/vapid-key');
+  },
+
+  async subscribePush(subscription) {
+    return this.request('/push/subscribe', {
+      method: 'POST',
+      body: JSON.stringify(subscription)
+    });
+  },
+
+  async unsubscribePush(endpoint) {
+    return this.request('/push/unsubscribe', {
+      method: 'POST',
+      body: JSON.stringify({ endpoint })
+    });
+  },
+
+  async getPushStatus() {
+    return this.request('/push/status');
+  },
+
+  async getPushPreferences() {
+    return this.request('/push/preferences');
+  },
+
+  async updatePushPreferences(preferences) {
+    return this.request('/push/preferences', {
+      method: 'PUT',
+      body: JSON.stringify(preferences)
+    });
+  },
 
   // Admin
   async checkAdmin() { return this.request('/admin/check'); },
@@ -155,23 +237,19 @@ const api = {
   async setUserAdmin(userId, isAdmin) { return this.request(`/admin/users/${userId}/admin`, { method: 'PUT', body: JSON.stringify({ isAdmin }) }); },
   async deleteUser(userId) { return this.request(`/admin/users/${userId}`, { method: 'DELETE' }); },
   
-  // Admin - Catégories globales
   async getAdminCategories() { return this.request('/admin/categories'); },
   async addAdminCategory(c) { return this.request('/admin/categories', { method: 'POST', body: JSON.stringify(c) }); },
   async updateAdminCategory(id, c) { return this.request(`/admin/categories/${id}`, { method: 'PUT', body: JSON.stringify(c) }); },
   async deleteAdminCategory(id) { return this.request(`/admin/categories/${id}`, { method: 'DELETE' }); },
 
-  // Admin - Marques globales
   async getAdminBrands() { return this.request('/admin/brands'); },
   async addAdminBrand(b) { return this.request('/admin/brands', { method: 'POST', body: JSON.stringify(b) }); },
   async updateAdminBrand(id, b) { return this.request(`/admin/brands/${id}`, { method: 'PUT', body: JSON.stringify(b) }); },
   async deleteAdminBrand(id) { return this.request(`/admin/brands/${id}`, { method: 'DELETE' }); },
 
-  // Admin - Gestion utilisateurs avancée
   async getAdminUser(id) { return this.request(`/admin/users/${id}`); },
   async resetUserPassword(id, newPassword) { return this.request(`/admin/users/${id}/reset-password`, { method: 'POST', body: JSON.stringify({ newPassword }) }); },
   async updateUserPermissions(id, permissions) { return this.request(`/admin/users/${id}/permissions`, { method: 'PUT', body: JSON.stringify({ permissions }) }); },
-  // Admin - Logs
   async getAdminLogs(level = 'all', limit = 100, offset = 0) { return this.request(`/admin/logs?level=${level}&limit=${limit}&offset=${offset}`); },
   async deleteAdminLogs(before = null) { return this.request('/admin/logs', { method: 'DELETE', body: JSON.stringify({ before }) }); },
   async getAdminStats() { return this.request('/admin/stats'); },
