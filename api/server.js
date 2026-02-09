@@ -1,4 +1,5 @@
-require('dotenv').config();
+const path = require('path');
+require('dotenv').config({ path: path.resolve(__dirname, '.env') });
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
@@ -86,6 +87,57 @@ app.use(express.urlencoded({ extended: true, limit: '10kb' }));
 // Trust proxy (pour obtenir la vraie IP derrière Nginx)
 app.set('trust proxy', 1);
 
+
+// ============================================
+// MIDDLEWARE ANTI-INJECTION (défense en profondeur)
+// ============================================
+const DANGEROUS_PATTERNS = [
+  /(\%27)|(')(\s)*(OR|AND|UNION|SELECT|INSERT|UPDATE|DELETE|DROP|CREATE|ALTER|EXEC)/i,
+  /(\%3B)|(;)\s*(DROP|DELETE|UPDATE|INSERT|CREATE|ALTER)/i,
+  /(UNION\s+(ALL\s+)?SELECT)/i,
+  /(SELECT\s+.*FROM\s+)/i,
+  /(INSERT\s+INTO\s+)/i,
+  /(DROP\s+TABLE)/i,
+  /xp_cmdshell/i,
+  /(INFORMATION_SCHEMA|sys\.(tables|columns))/i,
+  /(SLEEP|BENCHMARK|WAITFOR)\s*\(/i,
+  /(LOAD_FILE|INTO\s+OUTFILE|INTO\s+DUMPFILE)/i,
+  /<script[\s>]/i,
+  /javascript\s*:/i,
+  /on(load|error|click|mouseover|submit|focus|blur)\s*=/i,
+  /document\.(cookie|location|write)/i,
+  /(eval|alert|prompt|confirm)\s*\(/i,
+  /\.\.\//,
+  /(\/etc\/(passwd|shadow|hosts))/i,
+  /(\/proc\/self)/i,
+];
+
+const checkPayload = (value) => {
+  if (typeof value === 'string') {
+    return DANGEROUS_PATTERNS.some(pattern => pattern.test(value));
+  }
+  if (typeof value === 'object' && value !== null) {
+    return Object.values(value).some(v => checkPayload(v));
+  }
+  return false;
+};
+
+app.use('/api/', (req, res, next) => {
+  // Vérifier query string
+  if (req.query && checkPayload(req.query)) {
+    return res.status(403).json({ error: 'Requête bloquée' });
+  }
+  // Vérifier body
+  if (req.body && checkPayload(req.body)) {
+    return res.status(403).json({ error: 'Requête bloquée' });
+  }
+  // Vérifier params
+  if (req.params && checkPayload(req.params)) {
+    return res.status(403).json({ error: 'Requête bloquée' });
+  }
+  next();
+});
+
 // ============================================
 // RATE LIMITING
 // ============================================
@@ -97,7 +149,7 @@ const globalLimiter = rateLimit({
   message: { error: 'Trop de requêtes, réessayez plus tard' },
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: (req) => req.ip
+  validate: { xForwardedForHeader: false }
 });
 app.use('/api/', globalLimiter);
 
